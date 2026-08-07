@@ -28,7 +28,7 @@ The v1 loop runs end to end. This works today:
 
 The binary writes no content. `order` states what to write, and `gate` proves that an
 exercise is real. The binary itself makes no card, no exercise, and no graph. There is
-no graph editor, no visualiser, no web UI, and no knowledge tracing.
+no graph editor, no visualiser, no web UI, no knowledge tracing, and no sandbox.
 
 ## Requirements
 
@@ -39,6 +39,11 @@ no graph editor, no visualiser, no web UI, and no knowledge tracing.
 A grader is a shell script that you write, so you pick its dependencies. Write each
 Python grader with a PEP 723 header and run it under `uv run --no-project`. An exercise
 that needs pandas then works on a machine without pandas.
+
+CAUTION: `gate`, `attempt`, and `grade` run generated shell scripts with your own user
+permissions. A grader is `/bin/sh -c`, and nothing contains it. Read a generated
+`check/check.sh` and `solution/solve.sh` before you run them on a machine you care
+about. Isolation is the next thing this tool needs.
 
 ```sh
 cargo build --release   # target/release/benkyou
