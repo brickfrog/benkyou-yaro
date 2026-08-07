@@ -135,10 +135,11 @@ Content-hashed GUIDs are the usual default, and they are wrong here. This tool p
 a graph again after each edit. An edited concept therefore writes its cards again. A
 content-keyed GUID lands each card as a new note, and Anki deletes the review history.
 
-**FSRS is for the cards and not for the exercises.** The optimizer needs about 64
-reviews of one item before its output means anything. At one exercise each day, that is
-18 months. The procedural half uses mastery gating and coarse session-level spacing
-instead. The evidence supports this granularity.
+**FSRS is for the cards and not for the exercises.** FSRS schedules one item and shows
+it to you again. An exercise is used up when you solve it. A second attempt tests your
+memory of your own solution, and not the skill. The unit that survives repetition is
+the concept, with a new exercise each time. The procedural half therefore uses mastery
+gating and coarse session-level spacing.
 
 ## Storage
 

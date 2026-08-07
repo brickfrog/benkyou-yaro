@@ -1,9 +1,11 @@
 //! Scheduling the procedural track.
 //!
-//! Deliberately not an SRS. FSRS needs ~64 reviews per item to mean anything, and at
-//! one exercise a day that never arrives. The model here is mastery gating — taken
-//! from keybr, whose entire value proposition is adaptive practice and which contains
-//! no scheduler at all — plus coarse session-level spacing, which is the granularity
+//! Deliberately not an SRS. FSRS schedules an *item* for re-presentation, and an exercise
+//! is consumed by being solved — the second attempt tests recall of your own solution, not
+//! the skill. The unit that survives repetition is the concept, with a fresh item each
+//! time. The model here is mastery gating — taken from keybr, whose entire value
+//! proposition is adaptive practice and which contains no scheduler at all — plus
+//! coarse session-level spacing, which is the granularity
 //! the procedural-spacing literature actually supports. See DESIGN.md §5.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

@@ -33,12 +33,27 @@ is in the bridge between them.
 | Procedural | graded task, minutes to an hour | mastery gating + interleaved sessions | v1 |
 | Tool fluency | keystroke, CLI flag, seconds | latency threshold, retire when fluent | later |
 
-**FSRS is used for cards and not for exercises**, and the reason is arithmetic rather
-than philosophy. FSRS needs roughly 64 review logs *per item* before its optimizer means
-anything. At one exercise a day, 64 reviews of a single exercise is eighteen months. The
-data density never arrives. Separately, SM-2 and FSRS are both fit to binary recall of
-short verbal items at sub-ten-second latencies; no published work validates either on a
-twenty-minute task.
+**FSRS is used for cards and not for exercises**, and the reason is that the two tracks
+schedule different objects. FSRS schedules an *item* for re-presentation: it predicts the
+probability of recalling that item at time t. An exercise is consumed by being solved.
+Attempt it a second time and you are testing recall of your own solution, not the skill.
+The procedural unit that survives repetition is the *concept*, practised with a fresh item
+each time, so there is no item-level interval for FSRS to compute.
+
+The input channel does not fit either. FSRS consumes `(rating ∈ {1,2,3,4}, delta_t)`. A
+graded attempt produces a mechanical correctness in 0.0-1.0 plus the assistance the
+learner leaned on. Compressing that into a four-point subjective recall scale invents
+information nobody measured.
+
+Data density is a real but *secondary* problem, and it is worth stating correctly because
+an earlier draft of this document got it wrong. The optimizer does not need N reviews of
+one item: parameters are fit across the whole review history of a preset, and Anki's
+health check flags a pool under "a few hundred" reviews. At one exercise a day a
+procedural pool reaches that in about a year. That is an argument about when tuned
+parameters beat the defaults, not about whether the model fits the task.
+
+Separately, SM-2 and FSRS are both fit to binary recall of short verbal items at
+sub-ten-second latencies; no published work validates either on a twenty-minute task.
 
 What the evidence does support for skills is *session-level* spacing. Spruit et al. 2014
 (RCT, laparoscopic simulator) found 1×75min/week × 3 beat 3×75min in one day at
@@ -341,11 +356,15 @@ teaches you to distrust the tool, and then the tool dies.
 Anki does one thing better than anything else: it is a durable, synced, mobile,
 FSRS-tuned queue. It gets to do exactly that and nothing more.
 
-Its limits are structural rather than missing features: answer time is capped at 60
-seconds by default, so it cannot even *measure* a long task; grading is four self-report
-buttons with no channel for "passed 7 of 9 assertions"; the per-card side channel is
-under 100 bytes with keys of 8 bytes or less; and there is no way to express "don't show
-B until A is mature". Ordering lives in our graph; Anki receives the result.
+Its limits are structural rather than missing features. Answer time is capped at 60
+seconds *by default* and the cap is adjustable, so the honest objection is not that Anki
+cannot measure a long task — it is that duration is never an input to scheduling. FSRS
+consumes `(rating, delta_t)`; recorded seconds exist for the statistics screen and
+nothing else. Beyond that: grading is four self-report buttons with no channel for
+"passed 7 of 9 assertions"; the per-card side channel is under 100 bytes with keys of 8
+bytes or less; and there is no way to express "don't show B until A is mature". Anki has
+gather, sort and display-order controls, but none of them is a prerequisite gate.
+Ordering lives in our graph; Anki receives the result.
 
 **Note GUIDs derive from `concept_id + card_role`, not from content.** Content-hashed
 GUIDs mean that editing one concept returns every affected note as a *new* note and
