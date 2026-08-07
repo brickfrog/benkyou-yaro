@@ -1,6 +1,6 @@
 ---
 name: benkyou
-description: Drive the benkyou CLI to ramp a learner into a new domain — build and repair a prerequisite graph, assess what they already know, then generate flashcards and graded exercises against a real schedule. Use when the user wants to learn a domain systematically, asks for practice exercises or katas, mentions a new job or deadline to prepare for, or names a goal file (goal.json / *.json with `goal`, `nodes`, `edges`). Also use for Anki card generation where review history must survive regeneration.
+description: Drive the benkyou CLI so a learner can learn a new domain quickly — build and repair a prerequisite graph, assess what they already know, then generate flashcards and graded exercises against a real schedule. Use when the user wants to learn a domain systematically, asks for practice exercises or katas, mentions a new job or deadline to prepare for, or names a goal file (goal.json / *.json with `goal`, `nodes`, `edges`). Also use for Anki card generation where review history must survive regeneration.
 ---
 
 # benkyou

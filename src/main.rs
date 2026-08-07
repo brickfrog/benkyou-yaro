@@ -18,7 +18,7 @@ use benkyou::sched::{self, SchedConfig};
 use benkyou::store;
 
 const USAGE: &str = "\
-benkyou — ramp into a new domain
+benkyou — learn a new domain quickly
 
 USAGE
   benkyou --version

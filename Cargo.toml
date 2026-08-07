@@ -2,7 +2,7 @@
 name = "benkyou"
 version = "0.1.0"
 edition = "2021"
-description = "Ramp into a new domain: prerequisite graph, assessment, cards and graded exercises."
+description = "Learn a new domain quickly: prerequisite graph, assessment, cards and graded exercises."
 license = "MIT"
 repository = "https://github.com/brickfrog/benkyou-yaro"
 

@@ -1,4 +1,4 @@
-//! benkyou-yaro: ramp into a new domain.
+//! benkyou-yaro: learn a new domain quickly.
 //!
 //! The graph is scaffolding; [`graph::State`] is the product. See DESIGN.md.
 

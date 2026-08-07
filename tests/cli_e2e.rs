@@ -1,7 +1,7 @@
 //! Two things the binary owes an agent that has never run it before.
 //!
 //! Both were found the same way: three agents were handed the skill file and the
-//! binary and told to ramp a learner in a domain none of them knew. All three lost
+//! binary and told to teach a learner a domain none of them knew. All three lost
 //! calls to the same two walls — `--help` on a subcommand answering with a missing
 //! argument, and no way to see the shape of a goal file short of feeding serde one
 //! guess at a time. Neither is a library property; both live in argument handling and
@@ -45,8 +45,10 @@ fn help_is_answered_from_any_position() {
     ] {
         let (ok, stdout, stderr) = benkyou(&args);
         assert!(ok, "`benkyou {}` failed: {stderr}", args.join(" "));
+        // The tagline is prose and free to change. What this test defends is that a
+        // help request anywhere on the line prints the usage block, not an error.
         assert!(
-            stdout.starts_with("benkyou — ramp into a new domain"),
+            stdout.starts_with("benkyou — ") && stdout.contains("\nUSAGE\n"),
             "`benkyou {}` printed {stdout:?} instead of usage",
             args.join(" ")
         );
