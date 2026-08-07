@@ -64,9 +64,9 @@ come from the same generation, so get them as a pair.
 Pinned to a release:
 
 ```sh
-cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.1.0
+cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.1.1
 mkdir -p ~/.claude/skills/benkyou
-curl -sfL https://raw.githubusercontent.com/brickfrog/benkyou-yaro/v0.1.0/skill/SKILL.md \
+curl -sfL https://raw.githubusercontent.com/brickfrog/benkyou-yaro/v0.1.1/skill/SKILL.md \
   -o ~/.claude/skills/benkyou/SKILL.md
 ```
 
