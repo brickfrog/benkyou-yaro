@@ -1,0 +1,1122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>benkyou</title>
+<!--
+  The local exercise runner. One file, embedded with include_str!, because a study
+  tool that needs a build step is a study tool you stop using.
+
+  Nothing here executes learner code: every Run and Submit is a request to the local
+  server, which owns the Runner and its wall-clock deadline. The browser is a view.
+
+  Colours and the type stack are lifted from assets/card.css so the reviewer and the
+  runner look like the same program. Dark is the default and light is the override,
+  which is the opposite of the card because a card lives inside Anki's chrome and this
+  page is the chrome.
+-->
+<style>
+:root {
+  --bg: #1e1f22;
+  --panel: #232528;
+  --fg: #e6e6e6;
+  --muted: #9a9a9a;
+  --rule: #3a3c40;
+  --accent: #7aa7d9;
+  --code-bg: #2b2d31;
+  --ok: #7fb27f;
+  --warn: #d3a259;
+  --bad: #d68b83;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f2f1ee;
+    --panel: #fbfaf8;
+    --fg: #1a1a1a;
+    --muted: #6a6a6a;
+    --rule: #e2e2e2;
+    --accent: #3b6ea5;
+    --code-bg: #f0eeea;
+    --ok: #2f7a3f;
+    --warn: #8a5f10;
+    --bad: #a93b2e;
+    color-scheme: light;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.3em 0.85em;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { color: var(--muted); cursor: default; }
+button.primary { border-color: var(--accent); color: var(--accent); }
+button[hidden] { display: none; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Error strip. A dead server has to read as one line of text, never as a blank page
+ * and never as something only the console knows about. */
+#err {
+  flex: none;
+  display: flex;
+  gap: 0.8em;
+  align-items: baseline;
+  padding: 0.5em 1em;
+  background: var(--code-bg);
+  border-bottom: 1px solid var(--bad);
+  color: var(--bad);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+#err[hidden] { display: none; }
+#err span { flex: 1; white-space: pre-wrap; word-break: break-word; }
+
+header {
+  flex: none;
+  display: flex;
+  gap: 1.2em;
+  align-items: baseline;
+  flex-wrap: wrap;
+  padding: 0.6em 1em;
+  border-bottom: 1px solid var(--rule);
+  background: var(--panel);
+}
+
+.mark {
+  font-size: 0.72em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+#title { font-weight: 600; }
+#concept {
+  font-size: 0.78em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.strip {
+  margin-left: auto;
+  display: flex;
+  gap: 0.6em;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+#dots { display: flex; gap: 4px; }
+#dots i {
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--muted);
+  border-radius: 2px;
+  display: block;
+}
+#dots i.unknown { border-style: dashed; }
+#dots i.passed { background: var(--ok); border-color: var(--ok); }
+#dots i.failed { background: var(--warn); border-color: var(--warn); }
+#dots i.broken { background: var(--bad); border-color: var(--bad); }
+#dots i.here { outline: 1px solid var(--accent); outline-offset: 2px; }
+
+/* Three panes with draggable gutters. The two leading tracks carry explicit widths
+ * so a drag is a variable write; the trailing track eats the remainder. */
+#panes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--c1, 26rem) 5px var(--c2, 1fr) 5px minmax(0, 1fr);
+}
+
+.gutter { cursor: col-resize; background: var(--rule); }
+.gutter:hover { background: var(--accent); }
+
+.pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.pane > h2 {
+  flex: none;
+  margin: 0;
+  padding: 0.45em 1em;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  gap: 0.8em;
+  align-items: center;
+}
+
+.pane > h2 .right { margin-left: auto; text-transform: none; letter-spacing: 0; }
+
+.scroll { overflow: auto; padding: 0.6em 1em 2em; }
+
+/* Prose */
+#inst { font-size: 15px; line-height: 1.55; max-width: 44em; }
+#inst h1, #inst h2, #inst h3, #inst h4, #inst h5, #inst h6 {
+  line-height: 1.25;
+  margin: 1.3em 0 0.5em;
+}
+#inst h1 { font-size: 1.35em; }
+#inst h2 { font-size: 1.15em; }
+#inst h3 { font-size: 1em; }
+#inst h4, #inst h5, #inst h6 { font-size: 0.95em; color: var(--muted); }
+#inst > :first-child { margin-top: 0; }
+#inst p { margin: 0.7em 0; }
+#inst ul, #inst ol { margin: 0.7em 0; padding-left: 1.4em; }
+#inst li { margin: 0.2em 0; }
+#inst hr { border: none; border-top: 1px solid var(--rule); margin: 1.2em 0; }
+#inst blockquote {
+  margin: 0.8em 0;
+  border-left: 3px solid var(--accent);
+  padding-left: 0.9em;
+  color: var(--muted);
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--code-bg);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+}
+
+pre {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.45;
+  background: var(--code-bg);
+  border-radius: 5px;
+  padding: 0.7em 0.9em;
+  margin: 0.8em 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+pre code { background: none; padding: 0; font-size: 1em; }
+
+/* Editor */
+#tabs {
+  flex: none;
+  display: flex;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--rule);
+}
+#tabs[hidden] { display: none; }
+#tabs button {
+  border: none;
+  border-right: 1px solid var(--rule);
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.85em;
+  white-space: nowrap;
+  padding: 0.4em 0.9em;
+}
+#tabs button[aria-selected="true"] {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+#host { flex: 1; min-height: 0; position: relative; }
+
+textarea.ta {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: none;
+  padding: 0.6em 0.9em;
+  background: var(--panel);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+textarea.ta:focus { outline: none; }
+textarea.ta[hidden] { display: none; }
+
+/* Output */
+#out pre { margin: 0.4em 0 1em; }
+#out .lbl {
+  font-family: var(--mono);
+  font-size: 0.8em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.hint { color: var(--muted); }
+.hint code { font-size: 0.9em; }
+
+.verdict {
+  border: 1px solid var(--rule);
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 0.7em 0.9em;
+  margin: 0.2em 0 1em;
+}
+.verdict h3 {
+  margin: 0 0 0.3em;
+  font-size: 1em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.verdict.pass { border-left-color: var(--ok); }
+.verdict.pass h3 { color: var(--ok); }
+.verdict.fail { border-left-color: var(--warn); }
+.verdict.fail h3 { color: var(--warn); }
+.verdict.broken { border-left-color: var(--bad); }
+.verdict.broken h3 { color: var(--bad); }
+.verdict p { margin: 0.4em 0; }
+.verdict dl {
+  margin: 0.5em 0;
+  display: grid;
+  grid-template-columns: max-content max-content;
+  gap: 0.15em 1em;
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+.verdict dt { color: var(--muted); }
+.verdict dd { margin: 0; }
+.verdict pre { margin-bottom: 0; }
+.note { color: var(--muted); font-size: 0.9em; }
+
+footer {
+  flex: none;
+  display: flex;
+  gap: 0.6em;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.6em 1em;
+  border-top: 1px solid var(--rule);
+  background: var(--panel);
+}
+
+.save {
+  margin-left: auto;
+  display: flex;
+  gap: 0.5em;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+.save b {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  display: block;
+}
+.save.dirty b { background: var(--warn); }
+.save.saved b { background: transparent; border: 1px solid var(--muted); }
+.save.error { color: var(--bad); }
+.save.error b { background: var(--bad); }
+
+#timer { font-family: var(--mono); color: var(--muted); }
+
+.spin {
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid var(--rule);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  vertical-align: -0.15em;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }
+
+#closed {
+  margin: 0;
+  padding: 4em 1.4em;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* One column below this width: three panes side by side stop being legible long
+ * before the editor stops being usable. */
+@media (max-width: 1000px) {
+  #panes {
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: minmax(9rem, auto);
+    /* Stacked panes are taller than the viewport, so the strip itself has to scroll
+     * or the footer gets pushed off the bottom where the buttons are unreachable. */
+    overflow: auto;
+  }
+  .gutter { display: none; }
+  /* Without the gutters there is nothing between two panes, and a scroll region
+   * clipped mid-sentence reads as a broken layout rather than as more text. */
+  #panes > .pane { max-height: 55vh; }
+  #panes > .pane:not(:first-child) { border-top: 1px solid var(--rule); }
+}
+</style>
+</head>
+<body>
+
+<div id="err" hidden role="alert"><span id="errmsg"></span><button type="button" id="errx">dismiss</button></div>
+
+<header>
+  <span class="mark">benkyou</span>
+  <span id="concept"></span>
+  <span id="title">loading</span>
+  <span class="strip"><span id="count"></span><span id="dots"></span></span>
+</header>
+
+<main id="panes">
+  <section class="pane">
+    <h2>instructions<span class="right" id="guidance"></span></h2>
+    <div class="scroll"><div id="inst" class="hint">loading</div></div>
+  </section>
+  <div class="gutter" data-col="1" role="separator" aria-orientation="vertical"></div>
+  <section class="pane">
+    <h2>editor<span class="right" id="edkind"></span></h2>
+    <div id="tabs" role="tablist" hidden></div>
+    <div id="host"></div>
+  </section>
+  <div class="gutter" data-col="2" role="separator" aria-orientation="vertical"></div>
+  <section class="pane">
+    <h2>output<span class="right" id="timer"></span></h2>
+    <div class="scroll" id="out"><p class="hint">no run yet.</p></div>
+  </section>
+</main>
+
+<footer>
+  <button type="button" id="run" hidden>Run</button>
+  <button type="button" id="submit" class="primary" disabled>Submit</button>
+  <button type="button" id="next" hidden>Next</button>
+  <button type="button" id="finish" class="primary" hidden>Finish</button>
+  <span class="save saved" id="save"><b></b><span id="savetxt">saved</span></span>
+</footer>
+
+<script>
+"use strict";
+
+// The token is read once and lives only in this closure. It is never written into the
+// DOM, a link, or an error message: anything on the page can be copied out of a
+// screenshot, and this one grants command execution.
+var TOKEN = new URLSearchParams(location.search).get("t") || "";
+
+var MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/";
+var CDN_BUDGET_MS = 3000;
+var SAVE_DEBOUNCE_MS = 400;
+
+var $ = function (id) { return document.getElementById(id); };
+
+var S = {
+  items: [],          // session items, in order
+  i: 0,               // index the server considers current
+  start: 0,           // index at load: earlier items have no state we can honestly show
+  ex: null,           // current exercise payload
+  files: [],          // [{path, content, dirty}]
+  active: 0,
+  marks: {},          // index -> passed | failed | broken, from this session's submits
+  submitted: false,
+  busy: false,
+  done: false
+};
+
+/* ---------- markdown ---------------------------------------------------------
+ * A subset renderer, not a parser. Escaping happens once up front so every branch
+ * below is free to emit tags: no branch can be tricked into passing author HTML
+ * through, because by the time it runs there is no HTML left in the input.
+ */
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+
+function inline(s) {
+  var code = [];
+  s = s.replace(/`([^`]+)`/g, function (_, c) { code.push(c); return "\u0000" + (code.length - 1) + "\u0000"; });
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+       .replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+       .replace(/(^|[^_\w])_([^_\n]+)_/g, "$1<em>$2</em>");
+  return s.replace(/\u0000(\d+)\u0000/g, function (_, n) { return "<code>" + code[n] + "</code>"; });
+}
+
+function md(src) {
+  var lines = esc(src == null ? "" : src).replace(/\r\n?/g, "\n").split("\n");
+  var out = [], para = [], list = null, fence = null, buf = [], m;
+  var flushP = function () { if (para.length) { out.push("<p>" + inline(para.join(" ")) + "</p>"); para = []; } };
+  var flushL = function () { if (list) { out.push("</" + list + ">"); list = null; } };
+  var flushF = function () {
+    out.push("<pre><code>" + buf.join("\n") + "</code></pre>");
+    fence = null; buf = [];
+  };
+  for (var k = 0; k < lines.length; k++) {
+    var ln = lines[k];
+    if (fence !== null) { if (/^\s*```/.test(ln)) flushF(); else buf.push(ln); continue; }
+    if (/^\s*```/.test(ln)) { flushP(); flushL(); fence = ""; continue; }
+    if (!ln.trim()) { flushP(); flushL(); continue; }
+    if ((m = /^(#{1,6})\s+(.*)$/.exec(ln))) {
+      flushP(); flushL();
+      out.push("<h" + m[1].length + ">" + inline(m[2].trim()) + "</h" + m[1].length + ">");
+      continue;
+    }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(ln)) { flushP(); flushL(); out.push("<hr>"); continue; }
+    if ((m = /^\s*([-*+])\s+(.*)$/.exec(ln))) {
+      flushP();
+      if (list !== "ul") { flushL(); out.push("<ul>"); list = "ul"; }
+      out.push("<li>" + inline(m[2]) + "</li>");
+      continue;
+    }
+    if ((m = /^\s*\d+[.)]\s+(.*)$/.exec(ln))) {
+      flushP();
+      if (list !== "ol") { flushL(); out.push("<ol>"); list = "ol"; }
+      out.push("<li>" + inline(m[1]) + "</li>");
+      continue;
+    }
+    if ((m = /^\s*&gt;\s?(.*)$/.exec(ln))) { flushP(); flushL(); out.push("<blockquote>" + inline(m[1]) + "</blockquote>"); continue; }
+    // A bare line under a list item continues that item rather than opening a paragraph
+    // inside a <ul>, which would be invalid and would lose the indent.
+    if (list) { out[out.length - 1] = out[out.length - 1].replace(/<\/li>$/, " " + inline(ln.trim()) + "</li>"); continue; }
+    para.push(ln.trim());
+  }
+  if (fence !== null) flushF();
+  flushP(); flushL();
+  return out.join("\n");
+}
+
+/* ---------- transport ------------------------------------------------------- */
+
+function showError(msg) {
+  $("errmsg").textContent = msg;
+  $("err").hidden = false;
+}
+
+function clearError() { $("err").hidden = true; }
+
+// Every API failure has to arrive as prose. A rejected fetch means the server is gone,
+// which is the common case (the tab outlived the process) and deserves to say so.
+async function api(method, path, body) {
+  var init = { method: method, headers: { "X-Benkyou-Token": TOKEN }, cache: "no-store" };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  var res;
+  try {
+    res = await fetch(path, init);
+  } catch (e) {
+    throw new Error("cannot reach benkyou at " + location.origin + " - is the server still running?");
+  }
+  var text = await res.text();
+  var json = null;
+  try { json = JSON.parse(text); } catch (e) { /* fall through to the status line */ }
+  if (!res.ok) {
+    var detail = json && json.error ? json.error : text.trim().slice(0, 300);
+    throw new Error(res.status + " " + path + ": " + (detail || res.statusText));
+  }
+  if (json === null) throw new Error(path + ": response was not JSON");
+  return json;
+}
+
+/* ---------- editor ----------------------------------------------------------
+ * Two backends behind one adapter. Monaco is better when it is there; the textarea
+ * has to be complete on its own, because the whole point of a local study tool is
+ * that it works on a train with no signal.
+ */
+
+var ed = null;
+var onEdit = function () {};
+
+function insertText(ta, s) {
+  // execCommand is deprecated and still the only way to write into a textarea while
+  // keeping the native undo stack. Without it, Tab would erase the learner's history.
+  if (!document.execCommand || !document.execCommand("insertText", false, s)) {
+    var a = ta.selectionStart, b = ta.selectionEnd;
+    ta.value = ta.value.slice(0, a) + s + ta.value.slice(b);
+    ta.selectionStart = ta.selectionEnd = a + s.length;
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+}
+
+function textareaBackend(host) {
+  var boxes = [];
+  return {
+    kind: "textarea",
+    mount: function (files) {
+      host.textContent = "";
+      boxes = files.map(function (f, n) {
+        var ta = document.createElement("textarea");
+        ta.className = "ta";
+        ta.spellcheck = false;
+        ta.value = f.content;
+        ta.hidden = n !== 0;
+        ta.setAttribute("aria-label", f.path);
+        ta.addEventListener("input", function () { onEdit(n, ta.value); });
+        ta.addEventListener("keydown", function (e) {
+          if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+            e.preventDefault();
+            insertText(ta, "  ");
+          }
+        });
+        host.appendChild(ta);
+        return ta;
+      });
+    },
+    select: function (n) {
+      boxes.forEach(function (ta, k) { ta.hidden = k !== n; });
+      if (boxes[n]) boxes[n].focus();
+    },
+    value: function (n) { return boxes[n] ? boxes[n].value : ""; },
+    focus: function () { if (boxes[S.active]) boxes[S.active].focus(); },
+    layout: function () {}
+  };
+}
+
+var LANG = {
+  py: "python", sql: "sql", js: "javascript", ts: "typescript", rs: "rust",
+  json: "json", md: "markdown", sh: "shell", bash: "shell", yaml: "yaml",
+  yml: "yaml", toml: "ini", html: "html", css: "css", c: "c", cpp: "cpp",
+  go: "go", java: "java", rb: "ruby"
+};
+
+function langOf(path) {
+  var m = /\.([A-Za-z0-9]+)$/.exec(path || "");
+  return (m && LANG[m[1].toLowerCase()]) || "plaintext";
+}
+
+// Monaco's built-in themes paint their own background, which leaves the editor as a
+// near-white or near-black rectangle inside a pane that is neither. Deriving the
+// surface colours from the CSS variables keeps one source of truth for the palette.
+function monacoTheme(monaco) {
+  var css = getComputedStyle(document.documentElement);
+  var panel = css.getPropertyValue("--panel").trim();
+  monaco.editor.defineTheme("benkyou", {
+    base: matchMedia("(prefers-color-scheme: light)").matches ? "vs" : "vs-dark",
+    inherit: true,
+    rules: [],
+    colors: {
+      "editor.background": panel,
+      "editorGutter.background": panel,
+      "editorLineNumber.foreground": css.getPropertyValue("--muted").trim(),
+      // The default current-line marker is a full-width outlined box, which reads as
+      // a stray rule across the pane. A filled band says the same thing quietly.
+      "editor.lineHighlightBackground": css.getPropertyValue("--code-bg").trim(),
+      "editor.lineHighlightBorder": "#00000000"
+    }
+  });
+  monaco.editor.setTheme("benkyou");
+}
+
+function monacoBackend(monaco, host) {
+  var models = [];
+  monacoTheme(monaco);
+  var editor = monaco.editor.create(host, {
+    value: "",
+    language: "plaintext",
+    theme: "benkyou",
+    automaticLayout: true,
+    minimap: { enabled: false },
+    tabSize: 2,
+    insertSpaces: true,
+    renderWhitespace: "selection",
+    scrollBeyondLastLine: false,
+    fontSize: 13,
+    fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace"
+  });
+  // The CSS follows the system theme on its own; Monaco's theme is imperative, so a
+  // machine that flips at sunset would otherwise leave a light editor in a dark page.
+  matchMedia("(prefers-color-scheme: light)").addEventListener("change", function () {
+    monacoTheme(monaco);
+  });
+  var CtrlCmd = monaco.KeyMod.CtrlCmd;
+  editor.addCommand(CtrlCmd | monaco.KeyCode.Enter, function () { doRun(); });
+  editor.addCommand(CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Enter, function () { doSubmit(); });
+  editor.addCommand(CtrlCmd | monaco.KeyCode.KeyS, function () { flush(); });
+  return {
+    kind: "monaco",
+    mount: function (files) {
+      models.forEach(function (m) { m.dispose(); });
+      models = files.map(function (f) { return monaco.editor.createModel(f.content, langOf(f.path)); });
+      models.forEach(function (m, n) {
+        m.onDidChangeContent(function () { onEdit(n, m.getValue()); });
+      });
+      if (models[0]) editor.setModel(models[0]);
+    },
+    select: function (n) { if (models[n]) { editor.setModel(models[n]); editor.focus(); } },
+    value: function (n) { return models[n] ? models[n].getValue() : ""; },
+    focus: function () { editor.focus(); },
+    layout: function () { editor.layout(); }
+  };
+}
+
+// Resolve with Monaco or reject; either way, inside the budget. A late-arriving loader
+// cannot revive itself, because the first settle wins and the textarea is already live.
+function loadMonaco() {
+  return new Promise(function (resolve, reject) {
+    if (!navigator.onLine) { reject(new Error("offline")); return; }
+    var timer = setTimeout(function () { reject(new Error("cdn budget spent")); }, CDN_BUDGET_MS);
+    var fail = function (why) { clearTimeout(timer); reject(new Error(why)); };
+    window.MonacoEnvironment = {
+      getWorkerUrl: function () {
+        // A worker cannot be loaded cross-origin directly; a same-origin blob that
+        // importScripts the CDN copy is the supported workaround.
+        var src = 'self.MonacoEnvironment={baseUrl:"' + MONACO_BASE + '"};' +
+                  'importScripts("' + MONACO_BASE + 'vs/base/worker/workerMain.js");';
+        return URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+      }
+    };
+    var s = document.createElement("script");
+    s.src = MONACO_BASE + "vs/loader.js";
+    s.onerror = function () { fail("loader unreachable"); };
+    s.onload = function () {
+      if (!window.require) { fail("loader did not define require"); return; }
+      window.require.config({ paths: { vs: MONACO_BASE + "vs" } });
+      window.require(["vs/editor/editor.main"], function () {
+        clearTimeout(timer);
+        window.monaco ? resolve(window.monaco) : reject(new Error("monaco missing after load"));
+      }, function () { fail("editor module failed"); });
+    };
+    document.head.appendChild(s);
+  });
+}
+
+/* ---------- saving ---------------------------------------------------------- */
+
+var saveTimer = null;
+
+function setSave(cls, text) {
+  $("save").className = "save " + cls;
+  $("savetxt").textContent = text;
+}
+
+function dirtyCount() { return S.files.filter(function (f) { return f.dirty; }).length; }
+
+onEdit = function (n, value) {
+  var f = S.files[n];
+  if (!f || f.content === value) return;
+  f.content = value;
+  f.dirty = true;
+  setSave("dirty", "unsaved");
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(function () { flush(); }, SAVE_DEBOUNCE_MS);
+};
+
+// Every path that grades or executes calls this first. A Run against a stale file on
+// disk is the single most confusing failure this tool could produce.
+async function flush() {
+  clearTimeout(saveTimer);
+  var pending = S.files.filter(function (f) { return f.dirty; });
+  if (!pending.length) return true;
+  setSave("dirty", "saving");
+  try {
+    for (var k = 0; k < pending.length; k++) {
+      await api("PUT", "/api/file", { path: pending[k].path, content: pending[k].content });
+      pending[k].dirty = false;
+    }
+    setSave("saved", "saved");
+    return true;
+  } catch (e) {
+    setSave("error", "save failed");
+    showError(e.message);
+    return false;
+  }
+}
+
+/* ---------- rendering ------------------------------------------------------- */
+
+function renderStrip() {
+  var n = S.items.length;
+  $("count").textContent = n ? "item " + (S.i + 1) + " of " + n : "";
+  var dots = $("dots");
+  dots.textContent = "";
+  S.items.forEach(function (it, k) {
+    var d = document.createElement("i");
+    var mark = S.marks[k] || (k < S.start ? "unknown" : "untried");
+    d.className = mark + (k === S.i ? " here" : "");
+    d.title = (k + 1) + ". " + (it.title || "untitled") + " - " +
+      (mark === "unknown" ? "state unknown, submitted before this session" : mark);
+    dots.appendChild(d);
+  });
+}
+
+function renderTabs() {
+  var tabs = $("tabs");
+  tabs.textContent = "";
+  tabs.hidden = S.files.length < 2;
+  S.files.forEach(function (f, n) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = f.path;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", String(n === S.active));
+    b.onclick = function () { selectFile(n); };
+    tabs.appendChild(b);
+  });
+}
+
+function selectFile(n) {
+  S.active = n;
+  renderTabs();
+  ed.select(n);
+}
+
+function renderControls() {
+  var last = S.i >= S.items.length - 1;
+  $("run").hidden = !(S.ex && S.ex.run_cmd);
+  $("submit").disabled = S.busy || !S.ex;
+  $("run").disabled = S.busy || !S.ex;
+  $("next").hidden = !(S.submitted && !last);
+  $("next").disabled = S.busy;
+  $("finish").hidden = !(S.submitted && last);
+  $("finish").disabled = S.busy;
+}
+
+function emptyOutput() {
+  var out = $("out");
+  out.textContent = "";
+  var p = document.createElement("p");
+  p.className = "hint";
+  if (S.ex && S.ex.run_cmd) {
+    p.append("Run executes ");
+    var c = document.createElement("code");
+    c.textContent = S.ex.run_cmd;
+    p.append(c, " in the exercise directory, killed after " +
+      ((S.ex.limits && S.ex.limits.learner_secs) || "?") + "s. Submit grades it.");
+  } else {
+    p.textContent = "This exercise has no run command. Edit the files and Submit to grade.";
+  }
+  out.appendChild(p);
+}
+
+function block(label, text) {
+  var wrap = document.createDocumentFragment();
+  var h = document.createElement("div");
+  h.className = "lbl";
+  h.textContent = label;
+  var pre = document.createElement("pre");
+  pre.textContent = text && text.length ? text : "(empty)";
+  wrap.append(h, pre);
+  return wrap;
+}
+
+function renderRun(r) {
+  var out = $("out");
+  out.textContent = "";
+  var head = document.createElement("p");
+  head.className = "hint";
+  head.textContent = r.timed_out
+    ? "timed out after " + fmt(r.secs) + "s, process group killed"
+    : "exit " + r.exit + " in " + fmt(r.secs) + "s";
+  if (r.timed_out) head.style.color = "var(--warn)";
+  out.appendChild(head);
+  out.appendChild(block("stdout", r.stdout));
+  out.appendChild(block("stderr", r.stderr));
+}
+
+function fmt(secs) {
+  return typeof secs === "number" ? secs.toFixed(2) : String(secs);
+}
+
+// CheckBroken says the grader is at fault. Blurring that into Fail is how a learner
+// starts distrusting every red result they see, so it gets its own colour and words.
+function renderVerdict(v) {
+  var out = $("out");
+  out.textContent = "";
+  var name = String(v.verdict || "unknown");
+  var cls = name === "Pass" ? "pass" : name === "CheckBroken" ? "broken" : "fail";
+  var card = document.createElement("div");
+  card.className = "verdict " + cls;
+  var h = document.createElement("h3");
+  h.textContent = name;
+  card.appendChild(h);
+
+  if (cls === "pass") {
+    card.appendChild(para("Every gating dimension scored 1.0."));
+  } else if (cls === "broken") {
+    card.appendChild(para("The grader for this exercise is broken. That is the exercise author's fault, not yours. Nothing you write to the solution can turn this green - the check itself has to be fixed."));
+  } else {
+    card.appendChild(para(name === "Timeout"
+      ? "The graded run hit its deadline before finishing."
+      : "These dimensions did not reach 1.0:"));
+    var dims = v.dims && typeof v.dims === "object" ? v.dims : {};
+    var failed = Object.keys(dims).filter(function (k) { return !(Number(dims[k]) >= 1); }).sort();
+    if (failed.length) {
+      var dl = document.createElement("dl");
+      failed.forEach(function (k) {
+        var dt = document.createElement("dt");
+        dt.textContent = k;
+        var dd = document.createElement("dd");
+        dd.textContent = fmt(Number(dims[k]));
+        dl.append(dt, dd);
+      });
+      card.appendChild(dl);
+    } else {
+      card.appendChild(para("The grader reported no dimension scores."));
+    }
+  }
+
+  var pre = document.createElement("pre");
+  pre.textContent = v.detail && String(v.detail).length ? String(v.detail) : "(no detail)";
+  card.appendChild(pre);
+
+  if (v.recorded === false) {
+    card.appendChild(para("Not recorded: this attempt did not reach the state file.", "note"));
+  }
+  out.appendChild(card);
+}
+
+function para(text, cls) {
+  var p = document.createElement("p");
+  if (cls) p.className = cls;
+  p.textContent = text;
+  return p;
+}
+
+/* ---------- flight ---------------------------------------------------------- */
+
+var tick = null;
+
+function busy(on, label) {
+  S.busy = on;
+  renderControls();
+  clearInterval(tick);
+  if (!on) { $("timer").textContent = ""; return; }
+  var t0 = Date.now();
+  var paint = function () {
+    $("timer").textContent = "";
+    var s = document.createElement("span");
+    s.className = "spin";
+    $("timer").append(s, " " + label + " " + ((Date.now() - t0) / 1000).toFixed(1) + "s");
+  };
+  paint();
+  tick = setInterval(paint, 100);
+}
+
+async function doRun() {
+  if (S.busy || S.done || !S.ex || !S.ex.run_cmd) return;
+  if (!await flush()) return;
+  clearError();
+  busy(true, "running");
+  try {
+    renderRun(await api("POST", "/api/run", {}));
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    busy(false);
+  }
+}
+
+async function doSubmit() {
+  if (S.busy || S.done || !S.ex) return;
+  if (!await flush()) return;
+  clearError();
+  busy(true, "grading");
+  try {
+    var v = await api("POST", "/api/submit", {});
+    renderVerdict(v);
+    S.marks[S.i] = v.verdict === "Pass" ? "passed" : v.verdict === "CheckBroken" ? "broken" : "failed";
+    S.submitted = true;
+    renderStrip();
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    busy(false);
+  }
+}
+
+async function doNext() {
+  if (S.busy || S.done) return;
+  clearError();
+  busy(true, "advancing");
+  try {
+    var r = await api("POST", "/api/next", {});
+    // Stay busy through the load: enabling Submit against a half-swapped exercise
+    // would grade the previous item's files.
+    if (r.done) { S.submitted = true; S.i = S.items.length - 1; renderControls(); return; }
+    await loadExercise(r.index);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    busy(false);
+  }
+}
+
+async function doFinish() {
+  if (S.busy) return;
+  clearError();
+  busy(true, "closing");
+  try {
+    await api("POST", "/api/done", {});
+    S.done = true;
+    clearInterval(tick);
+    document.body.textContent = "";
+    var p = document.createElement("p");
+    p.id = "closed";
+    p.textContent = "Session closed. You can close this tab.";
+    document.body.appendChild(p);
+  } catch (e) {
+    showError(e.message);
+    busy(false);
+  }
+}
+
+/* ---------- loading -------------------------------------------------------- */
+
+async function loadExercise(i) {
+  var ex = await api("GET", "/api/exercise/" + i, undefined);
+  S.i = typeof ex.i === "number" ? ex.i : i;
+  S.ex = ex;
+  S.submitted = false;
+  S.files = (ex.files || []).map(function (f) {
+    return { path: f.path, content: f.content == null ? "" : f.content, dirty: false };
+  });
+  if (!S.files.length) S.files = [{ path: "solution.txt", content: "", dirty: false }];
+  S.active = 0;
+
+  var item = S.items[S.i] || {};
+  $("title").textContent = item.title || "exercise " + (S.i + 1);
+  $("concept").textContent = [item.concept, item.kind].filter(Boolean).join(" / ");
+  $("guidance").textContent = ex.guidance ? "guidance: " + ex.guidance : "";
+  $("inst").className = "";
+  $("inst").innerHTML = md(ex.instruction_md) || '<p class="hint">This exercise ships no instructions.</p>';
+
+  ed.mount(S.files);
+  renderTabs();
+  renderStrip();
+  renderControls();
+  setSave("saved", "saved");
+  emptyOutput();
+  ed.layout();
+}
+
+async function boot() {
+  var host = $("host");
+  var monaco = null;
+  try {
+    monaco = await loadMonaco();
+  } catch (e) {
+    // Not an error worth a strip: the fallback is a supported mode, not a degradation.
+    $("edkind").textContent = "textarea";
+  }
+  ed = monaco ? monacoBackend(monaco, host) : textareaBackend(host);
+  if (monaco) $("edkind").textContent = "monaco";
+  ed.mount(S.files.length ? S.files : [{ path: "", content: "", dirty: false }]);
+
+  try {
+    var sess = await api("GET", "/api/session", undefined);
+    S.items = sess.items || [];
+    S.start = S.i = typeof sess.index === "number" ? sess.index : 0;
+    await loadExercise(S.i);
+    clearError();
+  } catch (e) {
+    showError(e.message);
+    $("title").textContent = "no session";
+    $("inst").className = "hint";
+    $("inst").textContent = "";
+    $("inst").appendChild(para("The server did not answer, so there is no exercise to show. The editor below works, but nothing it holds will be saved or graded."));
+    var retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Retry";
+    retry.onclick = function () { location.reload(); };
+    $("inst").appendChild(retry);
+    renderControls();
+  }
+}
+
+/* ---------- wiring --------------------------------------------------------- */
+
+$("run").onclick = doRun;
+$("submit").onclick = doSubmit;
+$("next").onclick = doNext;
+$("finish").onclick = doFinish;
+$("errx").onclick = clearError;
+
+document.addEventListener("keydown", function (e) {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    e.shiftKey ? doSubmit() : doRun();
+  } else if (e.key === "s" || e.key === "S") {
+    // The browser's own save dialog on a page like this is pure noise.
+    e.preventDefault();
+    flush();
+  }
+});
+
+// Leaving with unsaved text would silently discard it; the debounce window is short
+// but a Cmd-W lands inside it often enough to matter.
+window.addEventListener("beforeunload", function (e) {
+  if (!S.done && dirtyCount()) { e.preventDefault(); e.returnValue = ""; }
+});
+
+for (var g of document.querySelectorAll(".gutter")) {
+  g.addEventListener("pointerdown", function (e) {
+    var col = e.currentTarget.dataset.col;
+    var panes = $("panes");
+    var left = panes.getBoundingClientRect().left;
+    var base = col === "2" ? panes.children[1].getBoundingClientRect().right - left : 0;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    var move = function (ev) {
+      var w = Math.max(180, ev.clientX - left - base);
+      panes.style.setProperty("--c" + col, w + "px");
+      if (ed) ed.layout();
+    };
+    var up = function () {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+}
+
+boot();
+</script>
+</body>
+</html>

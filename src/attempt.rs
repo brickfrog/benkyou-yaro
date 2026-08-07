@@ -159,3 +159,55 @@ pub fn practice_score(verdict: &Verdict) -> Option<f32> {
         Verdict::CheckBroken(_) => None,
     }
 }
+
+/// What crediting one attempt did to the schedule.
+pub struct Credited {
+    pub node: String,
+    pub score: f32,
+    pub confidence: Option<f32>,
+    /// A set, not a list: `record_attempt` credits each ancestor once, and the
+    /// ordering is what makes the CLI's output diffable between runs.
+    pub also_credited: std::collections::BTreeSet<String>,
+}
+
+/// Record a graded attempt against a goal's fluency, returning what moved.
+///
+/// This lives here rather than in the CLI because `grade` is no longer the only
+/// caller: the browser runner submits through the same path, and a second copy of
+/// this would be a second answer to "what does passing a kata do to the schedule".
+///
+/// Refuses a concept the graph does not contain. A score recorded against a node
+/// nobody declared is a score nothing will ever read again, and silently accepting
+/// it hides a typo in the exercise's `concept_id` until the schedule looks wrong.
+pub fn credit(
+    goal_path: &Path,
+    concept: &str,
+    score: f32,
+    today: i64,
+) -> Result<Credited, String> {
+    let graph = crate::store::load_graph(goal_path)?;
+    if !graph.contains(concept) {
+        return Err(format!(
+            "no node `{concept}` in {}",
+            goal_path.display()
+        ));
+    }
+    let fpath = crate::store::fluency_path(goal_path);
+    let mut fluencies = crate::store::load_fluencies(&fpath)?;
+    let cfg = crate::sched::SchedConfig::default();
+    let also_credited = crate::sched::record_attempt(
+        &graph,
+        &mut fluencies,
+        concept,
+        score,
+        today,
+        &cfg,
+    );
+    crate::store::save_fluencies(&fpath, &fluencies)?;
+    Ok(Credited {
+        node: concept.to_string(),
+        score,
+        confidence: fluencies.get(concept).map(|f| f.confidence),
+        also_credited,
+    })
+}

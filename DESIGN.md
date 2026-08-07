@@ -476,6 +476,47 @@ has to report it as one instead of hanging. Killing only the shell is not enough
 backgrounded grandchild keeps the output pipes open, and reading them to end then never
 returns.
 
+### The browser runner
+
+`serve` puts an editor, a Run button and a Submit button on `127.0.0.1`. It exists
+because the editor-and-two-commands loop asks the learner to hold the workspace path in
+their head between `attempt` and `grade`, and because a queue of exercises has no
+representation at all outside a shell history.
+
+**Execution stays in the process; the page is a view.** Run and Submit both go through
+the same `Runner` and the same grader the CLI uses. The tempting middle — WASM runs the
+code, the CLI grades it — is the worst cell in the matrix: two execution environments
+mean the gate's twice-run guarantee holds in neither, and the learner gets a green in
+the browser and a red from `grade` with nothing to arbitrate. Pyodide 314.0.4 is Python
+3.14 with pandas 3.0.2, so the temptation is real; it is declined on those grounds and
+not on capability.
+
+That also settles the confidentiality question, which is otherwise fatal. A page that
+graded client-side would have to ship the grader to the client, and view-source defeats
+`hidden`. Grading in the process keeps hidden cases where they already were.
+
+The queue is the argument list. There is deliberately no goal-driven queue: nothing maps
+a concept to a directory, because this tool ships no exercises and does not name a
+library root. Inventing an index here would quietly acquire the one thing §6 declines to
+own. A goal-driven queue needs an explicit `--library` the learner names.
+
+Two locks, with opposite policies, because the failure modes are not symmetric. An
+execution takes the workspace lock with `try_lock` and *refuses* on contention: queueing
+a double-clicked Run would execute the learner's code again after they already have
+their answer. A save takes the same lock and *waits*: refusing would discard something
+they typed, and a save landing mid-`grade` yields an artifact that is half of one
+revision and half of another — a verdict nothing can reproduce.
+
+Each attempt appends `attempt.jsonl` beside the workspace: open, run, submit, next,
+done, with durations from a monotonic clock. This is the honest time-on-task record Anki
+structurally cannot produce, since its `revlog` caps recorded answer time and never
+feeds it to the scheduler anyway. **It is recorded and never scheduled on.** Wall-clock
+in a browser tab measures whether the tab was open; monotonic duration at least measures
+the process. Neither is evidence of mastery, and §5 already has its four numbers.
+
+There is no keystroke replay. The events are the ones with a meaning a person can read
+six months later; a keystroke stream is a recording of typing, not of learning.
+
 What this costs is *not* capability. An exercise that wants a dependency can build a
 venv in its own run directory and install into it — verified: `python3 -m venv .venv &&
 .venv/bin/pip install six` succeeds in the runner. The nsjail configuration it replaced

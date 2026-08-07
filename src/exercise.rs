@@ -93,6 +93,29 @@ pub struct Gate {
     pub validated_at: String,
 }
 
+/// Optional per-exercise workspace settings.
+///
+/// Nothing on the CLI path needs these. They exist for a front-end that offers a Run
+/// button and therefore has to know how the learner's file is meant to be executed;
+/// an exercise without the section simply has no such button.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Workspace {
+    /// How to run whatever the learner currently has, with the workspace as the
+    /// working directory. This is not the grader: it produces output to read, never a
+    /// verdict, and the verdict still comes from `verify.cmd` alone.
+    #[serde(default)]
+    pub run_cmd: Option<String>,
+}
+
+impl Workspace {
+    /// True when the section carries nothing. `gate` rewrites `task.toml` after
+    /// validating, and without this every gated exercise would grow an empty
+    /// `[workspace]` it never asked for.
+    pub fn is_empty(&self) -> bool {
+        self.run_cmd.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub schema_version: String,
@@ -102,6 +125,11 @@ pub struct Task {
     pub verify: Verify,
     #[serde(default)]
     pub gate: Option<Gate>,
+    /// Additive on top of schema 1: an exercise written before this existed parses
+    /// and behaves exactly as it did, which is why `schema_version` does not move.
+    /// Kept last because TOML tables must follow every plain value in the struct.
+    #[serde(default, skip_serializing_if = "Workspace::is_empty")]
+    pub workspace: Workspace,
 }
 
 impl Task {
@@ -402,6 +430,7 @@ mod tests {
             limits: Limits::default(),
             verify: verify(&["correctness"]),
             gate: None,
+            workspace: Workspace::default(),
         };
         assert!(!task.is_validated());
 
@@ -439,5 +468,51 @@ hidden = true
         assert_eq!(task.verify.reward, "reward.json", "default applies");
         assert_eq!(task.limits.learner_secs, 900, "default applies");
         assert!(!task.is_validated(), "a fresh task has not been gated");
+        assert_eq!(task.workspace.run_cmd, None, "no [workspace] means no run command");
+    }
+
+    /// The `[workspace]` section is additive. Every task.toml written before it
+    /// existed must still load, and must not grow an empty section when the gate
+    /// writes the file back.
+    #[test]
+    fn a_task_toml_without_a_workspace_section_is_unchanged() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/exercises/dedupe");
+        let task = load(&dir).expect("the existing fixture still parses");
+
+        assert_eq!(task.schema_version, "1", "the schema version did not move");
+        assert_eq!(task.task.concept_id, "python_sets_and_order");
+        assert!(task.workspace.is_empty());
+
+        let back = toml::to_string_pretty(&task).expect("serialize");
+        assert!(!back.contains("[workspace]"), "an absent section came back:\n{back}");
+    }
+
+    #[test]
+    fn a_workspace_run_cmd_round_trips() {
+        let text = r#"
+schema_version = "1"
+
+[task]
+id = "dedupe-01"
+concept_id = "python_sets_and_order"
+kind = "kata"
+guidance_level = "blank"
+
+[verify]
+cmd = "sh check/check.sh"
+must_pass = ["correctness"]
+
+[workspace]
+run_cmd = "uv run --no-project solution.py"
+"#;
+        let task: Task = toml::from_str(text).expect("parse task.toml");
+        assert_eq!(
+            task.workspace.run_cmd.as_deref(),
+            Some("uv run --no-project solution.py")
+        );
+
+        let back = toml::to_string_pretty(&task).expect("serialize");
+        let again: Task = toml::from_str(&back).expect("reparse");
+        assert_eq!(again, task, "a workspace did not survive the trip through TOML");
     }
 }

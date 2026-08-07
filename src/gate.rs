@@ -126,6 +126,50 @@ pub struct GateReport {
     pub outcome: GateOutcome,
     pub solution: Run,
     pub empty: Run,
+    /// Advisory findings. These never reach `outcome`; see `check_run_cmd`.
+    pub warnings: Vec<String>,
+}
+
+impl GateReport {
+    /// The report body the `gate` command prints.
+    ///
+    /// `warnings` is omitted entirely rather than emitted empty, so an exercise with
+    /// no `[workspace]` produces exactly the bytes it did before the advisory run
+    /// existed and nothing reading this output has to be taught a new field.
+    pub fn json(&self) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "outcome": self.outcome,
+            "solution_verdict": self.solution.verdict,
+            "empty_verdict": self.empty.verdict,
+        });
+        if !self.warnings.is_empty() {
+            body["warnings"] = serde_json::json!(self.warnings);
+        }
+        body
+    }
+}
+
+/// Run the workspace `run_cmd` once against the solved workspace, advisory only.
+///
+/// A broken Run button is a broken button, not an unsound exercise. Nothing on the
+/// CLI path ever invokes `run_cmd`, so rejecting on it would fail exercises that are
+/// perfectly valid to sit down to — the two directions above are what soundness
+/// means. This reports a warning and changes nothing else.
+///
+/// The solved workspace is the right place to run it: it holds the reference answer,
+/// so a `run_cmd` that fails there fails for reasons the learner cannot fix.
+fn check_run_cmd(task: &Task, solution_root: &Path) -> Option<String> {
+    let cmd = task.workspace.run_cmd.as_deref()?;
+    let secs = task.limits.learner_secs;
+    match Runner::in_dir(solution_root.join(WORK), secs).run(cmd) {
+        Ok(o) if o.succeeded() => None,
+        Ok(o) if o.timed_out => Some(format!("run_cmd timed out after {secs}s")),
+        Ok(o) => Some(match o.exit_code {
+            Some(code) => format!("run_cmd exited {code}"),
+            None => "run_cmd did not exit normally".to_string(),
+        }),
+        Err(e) => Some(format!("run_cmd could not start: {e}")),
+    }
 }
 
 /// Run both directions of the gate.
@@ -144,8 +188,124 @@ pub fn run_gate(exercise_dir: &Path, scratch: &Path, at: &str) -> Result<GateRep
     fs::create_dir_all(&empty_root).map_err(|e| e.to_string())?;
 
     let solution = run_once(exercise_dir, &task, &solution_root, true)?;
+
+    // Advisory only, and only once the solution run has proved the exercise solvable:
+    // a `run_cmd` failure against a workspace that does not even pass says nothing.
+    let mut warnings = Vec::new();
+    if solution.verdict.is_pass() {
+        warnings.extend(check_run_cmd(&task, &solution_root));
+    }
+
     let empty = run_once(exercise_dir, &task, &empty_root, false)?;
 
     let outcome = exercise::gate_outcome(&solution.verdict, &empty.verdict, at);
-    Ok(GateReport { outcome, solution, empty })
+    Ok(GateReport { outcome, solution, empty, warnings })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn put(path: PathBuf, body: &str) {
+        fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        fs::write(&path, body).expect("write");
+    }
+
+    /// The smallest exercise the gate accepts: the reference writes the marker the
+    /// grader looks for, and the untouched workspace does not have it. Kept free of
+    /// python and uv so this test measures the gate and nothing else.
+    fn exercise(name: &str, run_cmd: Option<&str>) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("benkyou-gate-unit-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        put(dir.join("setup/answer.txt"), "");
+        put(dir.join("solution/solve.sh"), "printf 'done\\n' > answer.txt\n");
+        put(
+            dir.join("check/check.sh"),
+            "mkdir -p out\n\
+             if [ -s work/answer.txt ]; then s=1; else s=0; fi\n\
+             printf '{\"correctness\": %s}' \"$s\" > out/reward.json\n",
+        );
+        let workspace = match run_cmd {
+            Some(cmd) => format!("\n[workspace]\nrun_cmd = \"{cmd}\"\n"),
+            None => String::new(),
+        };
+        put(
+            dir.join("task.toml"),
+            &format!(
+                "schema_version = \"1\"\n\n\
+                 [task]\n\
+                 id = \"{name}\"\n\
+                 concept_id = \"unit\"\n\
+                 kind = \"kata\"\n\
+                 guidance_level = \"blank\"\n\n\
+                 [limits]\n\
+                 setup_secs = 10\n\
+                 learner_secs = 10\n\
+                 check_secs = 10\n\n\
+                 [verify]\n\
+                 cmd = \"sh check/check.sh\"\n\
+                 must_pass = [\"correctness\"]\n\
+                 {workspace}"
+            ),
+        );
+        dir
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("benkyou-gate-unit-scratch-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch");
+        dir
+    }
+
+    /// The whole point of the third run being advisory: the exercise is sound, only
+    /// its Run button is broken, and the gate must still validate it.
+    #[test]
+    fn a_failing_run_cmd_warns_and_does_not_reject() {
+        let report = run_gate(
+            &exercise("failrun", Some("exit 2")),
+            &scratch("failrun"),
+            "t",
+        )
+        .expect("gate ran");
+
+        assert!(
+            matches!(report.outcome, GateOutcome::Validated(_)),
+            "advisory run changed the outcome: {:?}",
+            report.outcome
+        );
+        assert_eq!(report.warnings, vec!["run_cmd exited 2".to_string()]);
+        assert_eq!(report.json()["warnings"][0], "run_cmd exited 2");
+    }
+
+    #[test]
+    fn a_working_run_cmd_warns_about_nothing() {
+        let report = run_gate(
+            &exercise("okrun", Some("cat answer.txt")),
+            &scratch("okrun"),
+            "t",
+        )
+        .expect("gate ran");
+
+        assert!(matches!(report.outcome, GateOutcome::Validated(_)));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    /// An exercise with no `[workspace]` must print what it printed before the
+    /// advisory run existed, byte for byte.
+    #[test]
+    fn no_run_cmd_leaves_the_printed_report_byte_identical() {
+        let report = run_gate(&exercise("norun", None), &scratch("norun"), "t").expect("gate ran");
+        assert!(report.warnings.is_empty());
+
+        let before = serde_json::json!({
+            "outcome": report.outcome,
+            "solution_verdict": report.solution.verdict,
+            "empty_verdict": report.empty.verdict,
+        });
+        assert_eq!(
+            serde_json::to_string_pretty(&report.json()).expect("serialize"),
+            serde_json::to_string_pretty(&before).expect("serialize"),
+        );
+    }
 }

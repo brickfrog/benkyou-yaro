@@ -25,10 +25,11 @@ The v1 loop runs end to end. This works today:
 | scheduling | Mastery gating, interleaved sessions, per-hop `encompasses` credit, and demotion after a failed attempt. |
 | cards | Concept-stable note identity, allowlist sanitizer, and AnkiConnect push. |
 | orders | `order` names the node, the prerequisites you can assume, and the guidance level. It hands the agent a fillable contract. |
+| browser runner | `serve` gives a queue of exercises an editor, a Run button and a Submit button on `127.0.0.1`. The code runs in this process, not in the tab. |
 
 The binary writes no content. `order` states what to write, and `gate` proves that an
 exercise is real. The binary itself makes no card, no exercise, and no graph. There is
-no graph editor, no visualiser, no web UI, no knowledge tracing, and no sandbox.
+no graph editor, no visualiser, and no knowledge tracing. There is no sandbox.
 
 ## Requirements
 
@@ -116,6 +117,9 @@ benkyou attempt ./exercises/foo      # lay out a workspace, which grade finds ag
 benkyou grade ./exercises/foo --goal ramp
 benkyou session ramp --size 5        # 5 entries, weakest first
 
+# Or do the same work in a browser instead of an editor.
+benkyou serve ./exercises/foo ./exercises/bar --goal ramp
+
 # Declarative half.
 benkyou cards cards.json --deck benkyou::ramp          # prints notes, writes nothing
 benkyou cards cards.json --deck benkyou::ramp --push   # writes the notes
@@ -145,6 +149,38 @@ it to you again. An exercise is used up when you solve it. A second attempt test
 memory of your own solution, and not the skill. The unit that survives repetition is
 the concept, with a new exercise each time. The procedural half therefore uses mastery
 gating and coarse session-level spacing.
+
+## The browser runner
+
+`benkyou serve` gives a queue of exercises an editor, a Run button and a Submit button.
+It prints one URL and opens it. The URL holds a token for that one session.
+
+```sh
+benkyou serve ./exercises/foo ./exercises/bar --goal ramp
+```
+
+The queue is the argument list, in that order. There is no queue from a goal, because
+nothing here maps a concept to a directory: this tool ships no exercises and does not
+name your exercise library. You give the paths, as you do for `attempt` and `grade`.
+
+**Your code runs in this process, and never in the tab.** Run and Submit both go
+through the same runner and the same grader the CLI uses. Put a second engine in the
+page, such as Pyodide, and it gives you a green in the browser and a red from `grade`.
+You then believe the first one you saw. The page edits files and shows output.
+
+`Run` needs a command to call. Declare it in `task.toml`, and the gate then checks it
+against the reference solution and warns you if it fails:
+
+```toml
+[workspace]
+run_cmd = "uv run --no-project solution.py"
+```
+
+Without it the Run button does not appear, and Submit still grades.
+
+Each attempt writes `attempt.jsonl` beside the workspace: one line for each open, run,
+submit and step. Durations come from a monotonic clock. This record is history and it
+is read by a person. **No part of it reaches the scheduler.**
 
 ## Storage
 

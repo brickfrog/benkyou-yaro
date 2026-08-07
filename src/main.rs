@@ -103,6 +103,15 @@ USAGE
       Materialise a workspace and sit down to the exercise. Refuses anything the
       gate has not validated, and copies only setup/ — never the solution.
 
+  benkyou serve <exercise-dir>... [--goal <goal>] [--port N] [--no-open]
+      Sit down to a queue of exercises in a browser instead of an editor. Serves a
+      page on 127.0.0.1 and prints its URL, which carries a one-session token. Run
+      and submit execute here, in this process, against the same grader `grade`
+      uses; the page only edits files and shows output. The queue is the argument
+      list, in order — there is no goal-driven queue, because nothing maps a concept
+      to a directory. With --goal a pass records practice fluency, as `grade` does.
+      Exits when the page says it is finished.
+
   benkyou grade <exercise-dir> [--work <dir>] [--goal <goal>]
       Run the exercise's own grader against your workspace. With --goal the score
       is recorded as practice fluency for the task's concept, so doing the kata is
@@ -146,6 +155,11 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
+/// Flags that take no value. Without this list `positional` eats the argument after
+/// a boolean flag, so `cards --push cards.json` loses the file — the flag consumes
+/// it and the command reports a missing argument for something plainly there.
+const VALUELESS: &[&str] = &["--help", "--version", "--push", "--no-open"];
+
 fn positional(args: &[String]) -> Vec<&String> {
     let mut out = Vec::new();
     let mut skip = false;
@@ -155,7 +169,7 @@ fn positional(args: &[String]) -> Vec<&String> {
             continue;
         }
         if a.starts_with("--") {
-            skip = true;
+            skip = !VALUELESS.contains(&a.as_str());
             continue;
         }
         out.push(a);
@@ -175,6 +189,16 @@ fn work_root(args: &[String], dir: &Path, task: &Task) -> Result<PathBuf, String
         .map(|s| s.to_string_lossy().into_owned())
         .ok_or_else(|| format!("{}: no directory name to work under", dir.display()))?;
     store::work_root(&task.task.concept_id, &slug)
+}
+
+/// Best effort. A failed open is not a failed session: the URL is already on stdout,
+/// and a headless box or an unset `$BROWSER` is a normal way to run this.
+fn open_browser(url: &str) {
+    let _ = std::process::Command::new("xdg-open")
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn run(args: &[String]) -> Result<String, String> {
@@ -664,11 +688,7 @@ fn run(args: &[String]) -> Result<String, String> {
             std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
             let at = store::now_iso();
             let report = run_gate(&dir, &scratch, &at)?;
-            let body = serde_json::json!({
-                "outcome": report.outcome,
-                "solution_verdict": report.solution.verdict,
-                "empty_verdict": report.empty.verdict,
-            });
+            let body = report.json();
             let text = json(&body)?;
             match report.outcome {
                 GateOutcome::Validated(_) => {
@@ -710,6 +730,47 @@ fn run(args: &[String]) -> Result<String, String> {
             }))
         }
 
+        "serve" => {
+            // The queue is the argument list. There is no goal-driven queue because
+            // nothing maps a concept to a directory on disk: this tool ships no
+            // exercises and declines to name a library root (see `order.rs`), so the
+            // caller supplies paths here exactly as it does to `attempt` and `grade`.
+            let dirs: Vec<PathBuf> = pos.iter().map(|s| PathBuf::from(s.as_str())).collect();
+            if dirs.is_empty() {
+                return Err("serve: name at least one exercise directory".into());
+            }
+            let items = dirs
+                .iter()
+                .map(|d| benkyou::browser::Item::load(d))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let goal = match flag(args, "--goal") {
+                Some(g) => {
+                    let p = store::goal_path(&g).map_err(|e| format!("serve: {e}"))?;
+                    // Fail now rather than on the first submit: a session that cannot
+                    // record is one the learner would finish before finding out.
+                    store::load_graph(&p)?;
+                    Some(p)
+                }
+                None => None,
+            };
+
+            let port: u16 = match flag(args, "--port") {
+                Some(p) => p.parse().map_err(|_| "serve: --port wants a number")?,
+                None => 0,
+            };
+            let server = benkyou::serve::bind(port)?;
+            let url = format!("http://127.0.0.1:{}/?t={}", server.port(), server.token());
+            let app = benkyou::browser::App::new(items, goal, server.shutdown_handle());
+
+            println!("{url}");
+            if !args.iter().any(|a| a == "--no-open") {
+                open_browser(&url);
+            }
+            server.run(move |req| app.handle(req))?;
+            Ok(String::new())
+        }
+
         "grade" => {
             let dir = need(0, "exercise-dir")?;
             let task = exercise::load(&dir)?;
@@ -720,28 +781,18 @@ fn run(args: &[String]) -> Result<String, String> {
             let mut practice = serde_json::Value::Null;
             if let (Some(goal), Some(score)) = (flag(args, "--goal"), score) {
                 let gpath = store::goal_path(&goal).map_err(|e| format!("grade: {e}"))?;
-                let graph = store::load_graph(&gpath)?;
-                let node = task.task.concept_id.clone();
-                if !graph.contains(&node) {
-                    return Err(format!("grade: no node `{node}` in {}", gpath.display()));
-                }
-                let fpath = store::fluency_path(&gpath);
-                let mut fluencies = store::load_fluencies(&fpath)?;
-                let cfg = SchedConfig::default();
-                let credited = sched::record_attempt(
-                    &graph,
-                    &mut fluencies,
-                    &node,
+                let c = benkyou::attempt::credit(
+                    &gpath,
+                    &task.task.concept_id,
                     score,
                     store::today(),
-                    &cfg,
-                );
-                store::save_fluencies(&fpath, &fluencies)?;
+                )
+                .map_err(|e| format!("grade: {e}"))?;
                 practice = serde_json::json!({
-                    "node": node,
-                    "score": score,
-                    "confidence": fluencies.get(&node).map(|f| f.confidence),
-                    "also_credited": credited,
+                    "node": c.node,
+                    "score": c.score,
+                    "confidence": c.confidence,
+                    "also_credited": c.also_credited,
                 });
             }
 

@@ -5,10 +5,13 @@
 pub mod anki;
 pub mod assess;
 pub mod attempt;
+pub mod browser;
 pub mod exercise;
 pub mod gate;
 pub mod graph;
 pub mod order;
+pub mod record;
 pub mod run;
 pub mod sched;
+pub mod serve;
 pub mod store;
