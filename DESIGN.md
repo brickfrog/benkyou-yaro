@@ -508,11 +508,15 @@ they typed, and a save landing mid-`grade` yields an artifact that is half of on
 revision and half of another — a verdict nothing can reproduce.
 
 Each attempt appends `attempt.jsonl` beside the workspace: open, run, submit, next,
-done, with durations from a monotonic clock. This is the honest time-on-task record Anki
-structurally cannot produce, since its `revlog` caps recorded answer time and never
-feeds it to the scheduler anyway. **It is recorded and never scheduled on.** Wall-clock
-in a browser tab measures whether the tab was open; monotonic duration at least measures
-the process. Neither is evidence of mastery, and §5 already has its four numbers.
+done, with durations from a monotonic clock. The contrast with Anki is narrower than it
+is tempting to write. Anki *does* record answer seconds, and its 60-second cap is an
+adjustable default; what it does not do is let duration reach the scheduler, because
+FSRS consumes `(rating, delta_t)` and nothing else. The same rule holds here, by
+choice rather than by limitation: **recorded, never scheduled on.** What this log adds
+over `revlog` is structure — run and submit are separate events, with exit codes —
+not the mere fact of a timestamp. Wall-clock in a browser tab measures whether the tab
+was open; monotonic duration at least measures the process. Neither is evidence of
+mastery, and §5 already has its four numbers.
 
 There is no keystroke replay. The events are the ones with a meaning a person can read
 six months later; a keystroke stream is a recording of typing, not of learning.
