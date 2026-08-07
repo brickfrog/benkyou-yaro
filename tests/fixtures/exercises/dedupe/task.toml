@@ -1,0 +1,21 @@
+schema_version = "1"
+
+[task]
+id = "dedupe-order-preserving-01"
+concept_id = "python_sets_and_order"
+kind = "kata"
+guidance_level = "blank"
+generated_by = "fixture"
+generated_at = "2026-08-05"
+
+[limits]
+setup_secs = 30
+learner_secs = 60
+check_secs = 60
+
+[verify]
+cmd = "sh check/check.sh"
+reward = "reward.json"
+must_pass = ["correctness"]
+advisory = ["approach"]
+hidden = true

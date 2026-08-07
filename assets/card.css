@@ -1,0 +1,107 @@
+/* Card styling for both benkyou notetypes.
+ *
+ * Desktop Anki sets `.nightMode`; AnkiMobile and AnkiDroid set `.night_mode`. Both
+ * have to be named or dark mode is broken on exactly one platform, which is the sort
+ * of thing you only find out after a week of reviews on the train.
+ */
+
+.card {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #6a6a6a;
+  --rule: #e2e2e2;
+  --accent: #3b6ea5;
+  --code-bg: #f4f4f4;
+  --code-fg: #1a1a1a;
+
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 20px;
+  line-height: 1.5;
+  text-align: left;
+  padding: 1.2em 1.4em;
+  max-width: 46em;
+  margin: 0 auto;
+}
+
+.card.nightMode,
+.card.night_mode,
+.nightMode .card,
+.night_mode .card {
+  --bg: #1e1f22;
+  --fg: #e6e6e6;
+  --muted: #9a9a9a;
+  --rule: #3a3c40;
+  --accent: #7aa7d9;
+  --code-bg: #2b2d31;
+  --code-fg: #e6e6e6;
+}
+
+.concept {
+  font-size: 0.7em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.8em;
+}
+
+.front {
+  font-weight: 600;
+}
+
+hr#answer {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 1.1em 0;
+}
+
+.back {
+  color: var(--fg);
+}
+
+.example {
+  margin-top: 1.1em;
+  border-left: 3px solid var(--accent);
+  padding-left: 0.9em;
+}
+
+/* Code has to render as code. Escaping every field wholesale would make these
+ * selectors unreachable, which is why the sanitizer keeps an allowlist. */
+code {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.88em;
+}
+
+pre {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border-radius: 6px;
+  padding: 0.8em 1em;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.85em;
+  line-height: 1.45;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  font-size: 1em;
+}
+
+.cloze {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .card {
+    font-size: 18px;
+    padding: 0.9em 1em;
+  }
+}
