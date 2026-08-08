@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use benkyou::attempt::{self, practice_score};
 use benkyou::exercise::{self, Verdict};
+use benkyou::run::Backend;
 
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).expect("mkdir");
@@ -31,6 +32,12 @@ fn copy_tree(from: &Path, to: &Path) {
 /// The digest is computed rather than invented, because a hand-written one is exactly
 /// what `require_current` exists to reject. The verdict lands in the sidecar, so
 /// `task.toml` here is only ever written by the edit above it.
+/// Every test runs under the backend a user gets by default. Proving containment
+/// against anything else would prove nothing.
+fn sandbox() -> Backend {
+    Backend::select(false).expect("a sandbox: install bubblewrap")
+}
+
 fn exercise_dir(name: &str, gated: bool, hidden: bool) -> PathBuf {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/exercises/dedupe");
     let dir = std::env::temp_dir().join(format!("benkyou-attempt-{name}"));
@@ -53,6 +60,7 @@ fn exercise_dir(name: &str, gated: bool, hidden: bool) -> PathBuf {
                 empty_fails: true,
                 validated_at: "test".into(),
                 digest,
+                runner: exercise::Runner::of(&sandbox()),
                 env: exercise::Env::current(),
             },
         )
@@ -76,14 +84,14 @@ fn an_ungated_exercise_is_refused_by_both_entry_points() {
     let root = workspace("ungated");
     assert!(exercise::read_gate(&dir).expect("read gate").is_none());
 
-    let opened = attempt::open(&dir, &root);
+    let opened = attempt::open(&dir, &root, &sandbox());
     assert!(opened.is_err(), "ungated exercise was opened");
 
     // Reaching `grade` without `open` is not a way around it: hand-make the
     // workspace and it must still refuse.
     fs::create_dir_all(root.join("work")).expect("mkdir");
     let task = exercise::load(&dir).expect("load");
-    let graded = attempt::grade(&dir, &task, &root);
+    let graded = attempt::grade(&dir, &task, &root, &sandbox());
     assert!(graded.is_err(), "ungated exercise was graded");
 }
 
@@ -94,8 +102,8 @@ fn hidden_grading_leaves_no_checker_beside_the_learners_work() {
     let root = workspace("hidden");
     let task = exercise::load(&dir).expect("load");
 
-    attempt::open(&dir, &root).expect("open");
-    let report = attempt::grade(&dir, &task, &root).expect("grade");
+    attempt::open(&dir, &root, &sandbox()).expect("open");
+    let report = attempt::grade(&dir, &task, &root, &sandbox()).expect("grade");
 
     // The grade itself still happened and still says something.
     assert!(report.reward.is_some(), "no reward file was read back");
@@ -117,8 +125,8 @@ fn a_visible_exercise_leaves_its_run_for_inspection() {
     let root = workspace("visible");
     let task = exercise::load(&dir).expect("load");
 
-    attempt::open(&dir, &root).expect("open");
-    attempt::grade(&dir, &task, &root).expect("grade");
+    attempt::open(&dir, &root, &sandbox()).expect("open");
+    attempt::grade(&dir, &task, &root, &sandbox()).expect("grade");
 
     assert!(root.join("check").exists(), "a visible exercise should leave its checker");
     assert!(root.join("out").exists(), "a visible exercise should leave its output");
@@ -130,7 +138,7 @@ fn the_reference_solution_never_reaches_the_workspace() {
     let dir = exercise_dir("nosol", true, true);
     let root = workspace("nosol");
 
-    let work = attempt::open(&dir, &root).expect("open");
+    let work = attempt::open(&dir, &root, &sandbox()).expect("open");
     assert!(dir.join("solution/solve.sh").exists(), "the fixture has a solution to leak");
     assert!(!work.join("solve.sh").exists());
     assert!(!work.join("solution").exists());
@@ -143,10 +151,10 @@ fn opening_refuses_to_clobber_existing_work() {
     let dir = exercise_dir("clobber", true, true);
     let root = workspace("clobber");
 
-    let work = attempt::open(&dir, &root).expect("open");
+    let work = attempt::open(&dir, &root, &sandbox()).expect("open");
     fs::write(work.join("solution.py"), "# an hour of my life\n").expect("write");
 
-    assert!(attempt::open(&dir, &root).is_err(), "a second open overwrote the workspace");
+    assert!(attempt::open(&dir, &root, &sandbox()).is_err(), "a second open overwrote the workspace");
     assert_eq!(
         fs::read_to_string(work.join("solution.py")).expect("read"),
         "# an hour of my life\n"

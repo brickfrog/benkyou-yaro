@@ -195,11 +195,23 @@ pub fn exercise_digest(dir: &Path) -> Result<String, String> {
 
     for name in FILES {
         let path = dir.join(name);
-        if !path.is_file() {
+        // `symlink_metadata`, not `is_file`, which follows: a symlinked `task.toml`
+        // would otherwise be hashed by its target's content, so the digest would
+        // describe a file the exercise does not contain and would not change when that
+        // file did. `copy_dir` refuses one at the door; agreeing here is what keeps
+        // "gated" and "hashable" the same set of trees.
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            return Err(format!("{}: symbolic link in an exercise", path.display()));
+        }
+        if !meta.is_file() {
             continue;
         }
         let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        feed(&mut h, name, 0, &bytes);
+        feed(&mut h, name, executable(&meta), &bytes);
     }
 
     for name in DIRS {
@@ -220,23 +232,46 @@ pub fn exercise_digest(dir: &Path) -> Result<String, String> {
     Ok(hex(&h.finish()))
 }
 
-/// One record in the hashed stream.
+/// One record in the hashed stream: kind, then a length-prefixed path, then
+/// length-prefixed content.
 ///
-/// The path and the length are hashed alongside the content so that moving a file, or
-/// splitting one file into two whose bytes concatenate to the original, is a different
-/// digest rather than the same one.
-fn feed(h: &mut Sha256, rel: &str, mode: u8, bytes: &[u8]) {
-    h.update(&[mode]);
+/// The length prefixes are the whole framing argument. Without them the stream is a
+/// concatenation, and a concatenation is ambiguous: a file `ab` holding `c` and a file
+/// `a` holding `bc` produce the same bytes and therefore the same digest. With them,
+/// the reader of the stream could recover the exact tree, which is the property that
+/// makes "same digest" mean "same exercise".
+///
+/// The kind byte carries the same weight one level up: a directory `x` and an empty
+/// file `x` are otherwise identical records.
+fn feed(h: &mut Sha256, rel: &str, kind: u8, bytes: &[u8]) {
+    h.update(&[kind]);
     h.update(&(rel.len() as u64).to_le_bytes());
     h.update(rel.as_bytes());
     h.update(&(bytes.len() as u64).to_le_bytes());
     h.update(bytes);
 }
 
-/// Mode byte: 0 plain file, 1 executable, 2 symlink.
+/// Entry kinds in the hashed stream. Distinguishing them is what stops a directory
+/// named `x` and an empty file named `x` hashing alike.
+const FILE: u8 = 0;
+const EXEC: u8 = 1;
+const DIR: u8 = 2;
+
+/// Walk a directory into a flat list of `(relative path, kind, bytes)`.
 ///
-/// The executable bit is content here, not metadata - `copy_dir` preserves it, and a
+/// Directories are recorded, not just their contents. An empty `setup/data/` is part
+/// of the starting state a learner is handed: a script that writes into it succeeds or
+/// fails depending on whether it exists, so its removal has to change the digest.
+///
+/// The executable bit is content here, not metadata — `snapshot` preserves it, and a
 /// `check.sh` that lost it is an exercise that no longer runs the same way.
+///
+/// Symlinks are an error rather than an entry. Hashing the target string describes
+/// something different from what the runner would execute, since the copy into a run
+/// directory reads through the link; hashing the target's content would make an
+/// exercise's identity depend on a file outside itself. `gate::snapshot` refuses them
+/// at the door, so reaching one here means a tree that was never gated — say so
+/// rather than return a digest that means nothing.
 fn walk(dir: &Path, prefix: &str, out: &mut Vec<(String, u8, Vec<u8>)>) -> Result<(), String> {
     let read = fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for entry in read {
@@ -244,17 +279,19 @@ fn walk(dir: &Path, prefix: &str, out: &mut Vec<(String, u8, Vec<u8>)>) -> Resul
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         let rel = format!("{prefix}/{name}");
-        // Not `metadata`: that follows links, and a link to a file outside the
-        // exercise would be hashed as if its content lived here.
+        // Not `metadata`: that follows links, and a link has to be seen to be refused.
         let meta = fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        if meta.file_type().is_symlink() {
-            let target = fs::read_link(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            out.push((rel, 2, target.to_string_lossy().into_owned().into_bytes()));
-        } else if meta.is_dir() {
+        let kind = meta.file_type();
+        if kind.is_symlink() {
+            return Err(format!("{}: symbolic link in an exercise", path.display()));
+        } else if kind.is_dir() {
+            out.push((rel.clone(), DIR, Vec::new()));
             walk(&path, &rel, out)?;
-        } else {
+        } else if kind.is_file() {
             let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             out.push((rel, executable(&meta), bytes));
+        } else {
+            return Err(format!("{}: not a regular file or directory", path.display()));
         }
     }
     Ok(())
@@ -263,12 +300,16 @@ fn walk(dir: &Path, prefix: &str, out: &mut Vec<(String, u8, Vec<u8>)>) -> Resul
 #[cfg(unix)]
 fn executable(meta: &fs::Metadata) -> u8 {
     use std::os::unix::fs::PermissionsExt;
-    u8::from(meta.permissions().mode() & 0o111 != 0)
+    if meta.permissions().mode() & 0o111 != 0 {
+        EXEC
+    } else {
+        FILE
+    }
 }
 
 #[cfg(not(unix))]
 fn executable(_meta: &fs::Metadata) -> u8 {
-    0
+    FILE
 }
 
 #[cfg(test)]

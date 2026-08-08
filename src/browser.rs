@@ -25,7 +25,8 @@ use serde_json::{json, Value};
 use crate::attempt;
 use crate::exercise::{self, Reward, Task, Verdict};
 use crate::record::{Event, Recorder};
-use crate::run::Runner;
+use crate::gate::WORK;
+use crate::run::{Access, Backend, Job};
 use crate::serve::{Request, Response, ShutdownHandle};
 
 /// The page, embedded rather than served from disk. Matches the `include_str!`
@@ -48,14 +49,14 @@ impl Item {
     /// The refusal is duplicated from `attempt::open` on purpose: failing at startup
     /// names every bad exercise at once, before a browser is opened, instead of
     /// stranding the learner on item four of six.
-    pub fn load(dir: &Path) -> Result<Self, String> {
+    pub fn load(dir: &Path, backend: &Backend) -> Result<Self, String> {
         let task = exercise::load(dir)?;
         // The same predicate `attempt::open` uses, not a weaker `gate.is_some()`: a
         // `[gate]` table can exist and record a failure, and accepting it here would
         // let the session start and then strand the learner when open() refuses. The
         // digest half matters more in a queue than anywhere else - a session composed
         // from six directories is six chances for one of them to have moved.
-        exercise::require_current(dir)?;
+        exercise::require_current(dir, backend)?;
         let slug = dir
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -100,10 +101,19 @@ pub struct App {
     /// `state`, which is what keeps the pair deadlock-free.
     exec: Mutex<()>,
     shutdown: ShutdownHandle,
+    /// The one way this session executes anything. Held on `App` rather than looked
+    /// up per request so a session cannot change isolation halfway through, and so the
+    /// backend a verdict was gated under is the backend that grades it.
+    backend: Backend,
 }
 
 impl App {
-    pub fn new(items: Vec<Item>, goal: Option<PathBuf>, shutdown: ShutdownHandle) -> Self {
+    pub fn new(
+        items: Vec<Item>,
+        goal: Option<PathBuf>,
+        shutdown: ShutdownHandle,
+        backend: Backend,
+    ) -> Self {
         App {
             items,
             goal,
@@ -113,6 +123,7 @@ impl App {
             }),
             exec: Mutex::new(()),
             shutdown,
+            backend,
         }
     }
 
@@ -214,7 +225,7 @@ impl App {
         let work = item.work();
         if !dir_has_files(&work) {
             std::fs::create_dir_all(&item.root).map_err(|e| e.to_string())?;
-            attempt::open(&item.dir, &item.root)?;
+            attempt::open(&item.dir, &item.root, &self.backend)?;
         }
 
         {
@@ -288,7 +299,13 @@ impl App {
             .run_cmd
             .as_deref()
             .ok_or("this exercise declares no [workspace] run_cmd")?;
-        let outcome = Runner::in_dir(item.work(), item.task.limits.learner_secs).run(cmd)?;
+        let outcome = self.backend.run(&Job::new(
+            &item.root,
+            &[(WORK, Access::Write)],
+            WORK,
+            cmd,
+            item.task.limits.learner_secs,
+        ))?;
 
         let ms = (outcome.elapsed_secs * 1000.0) as u64;
         self.log(i, Event::Run {
@@ -310,7 +327,7 @@ impl App {
     fn submit(&self) -> Result<Value, String> {
         let _exec = self.busy()?;
         let (i, item) = self.current()?;
-        let att = attempt::grade(&item.dir, &item.task, &item.root)?;
+        let att = attempt::grade(&item.dir, &item.task, &item.root, &self.backend)?;
         let score = attempt::practice_score(&att.verdict);
 
         let reward: Option<Reward> = att
@@ -584,11 +601,13 @@ mod tests {
              [task]\nid = \"t\"\nconcept_id = \"c\"\nkind = \"kata\"\nguidance_level = \"blank\"\n\
              [verify]\ncmd = \"sh check/check.sh\"\nmust_pass = [\"correctness\"]\n";
 
+        let backend = Backend::select(false).expect("a sandbox");
         let gate = |solution_passes, empty_fails, digest: &str| exercise::Gate {
             solution_passes,
             empty_fails,
             validated_at: "x".into(),
             digest: digest.into(),
+            runner: exercise::Runner::of(&Backend::select(false).expect("a sandbox")),
             env: exercise::Env::current(),
         };
 
@@ -621,7 +640,7 @@ mod tests {
             if let Some(build) = record {
                 exercise::write_gate(&dir, &build("")).unwrap();
             }
-            match Item::load(&dir) {
+            match Item::load(&dir, &backend) {
                 Ok(_) => panic!("accepted an exercise where {name}"),
                 Err(e) => assert!(e.contains(expected), "{name}: wanted {expected:?}, got {e}"),
             }
@@ -644,6 +663,7 @@ mod tests {
              [verify]\ncmd = \"sh check/check.sh\"\nmust_pass = [\"correctness\"]\n",
         )
         .unwrap();
+        let backend = Backend::select(false).expect("a sandbox");
         let digest = crate::digest::exercise_digest(&dir).unwrap();
         exercise::write_gate(
             &dir,
@@ -652,11 +672,12 @@ mod tests {
                 empty_fails: true,
                 validated_at: "x".into(),
                 digest,
+                runner: exercise::Runner::of(&backend),
                 env: exercise::Env::current(),
             },
         )
         .unwrap();
-        Item::load(&dir).expect("a current gate record must be accepted");
+        Item::load(&dir, &backend).expect("a current gate record must be accepted");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

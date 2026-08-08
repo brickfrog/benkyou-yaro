@@ -29,26 +29,31 @@ The v1 loop runs end to end. This works today:
 
 The binary writes no content. `order` states what to write, and `gate` proves that an
 exercise is real. The binary itself makes no card, no exercise, and no graph. There is
-no graph editor, no visualiser, and no knowledge tracing. There is no sandbox.
+no graph editor, no visualiser, and no knowledge tracing.
 
 ## Requirements
 
 - Rust (2021), and a Unix system with `/bin/sh`
+- `bubblewrap` (`bwrap`), for the sandbox. Every command that runs a script needs it.
 - Anki with AnkiConnect, for `cards --push` only
 - The programs that your own exercises call
 
-A grader is a shell script that you write, so you pick its dependencies. Write each
-Python grader with a PEP 723 header and run it under `uv run --no-project`. An exercise
-that needs pandas then works on a machine without pandas.
+A grader is a shell script that you write. It runs with no network, so it can use only
+what the machine already has. System Python packages are visible. A virtualenv is not.
+An exercise that needs pandas needs pandas installed on the machine, and the gate
+rejects the exercise when it is missing.
 
-CAUTION: `gate`, `attempt`, and `grade` run generated shell scripts with your own user
-permissions. A grader is `/bin/sh -c`, and nothing contains it. Read a generated
-`check/check.sh` and `solution/solve.sh` before you run them on a machine you care
-about. Isolation is the next thing this tool needs.
+`gate`, `attempt`, `grade` and `serve` run generated scripts in a sandbox. There is no
+network, no access to your files, and no access to your study state. The default needs
+`bubblewrap`. Without it the tool stops and tells you so.
+
+CAUTION: `--unsafe-host` turns the sandbox off. The scripts then run with your own user
+permissions, over your whole filesystem. Read a generated `check/check.sh` and
+`solution/solve.sh` before you use that flag.
 
 ```sh
 cargo build --release   # target/release/benkyou
-cargo test              # 233 tests
+cargo test              # 293 tests
 ```
 
 ## Use it from a chat agent
@@ -179,7 +184,7 @@ against the reference solution and warns you if it fails:
 
 ```toml
 [workspace]
-run_cmd = "uv run --no-project solution.py"
+run_cmd = "python3 solution.py"
 ```
 
 Without it the Run button does not appear, and Submit still grades.

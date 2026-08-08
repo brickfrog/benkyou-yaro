@@ -12,13 +12,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::exercise::{self, GateOutcome, Task, Verdict};
-use crate::run::Runner;
+use crate::run::{Access, Backend, Job};
 
-/// Layout of a run directory. The run directory is the working directory, so
-/// a check script refers to `work/`, `check/` and `out/` relatively.
+/// Layout of a run directory. The run directory is the root of the job's view, so a
+/// check script refers to `work/`, `check/` and `out/` relatively — under either
+/// backend, because the sandbox reproduces these names.
 pub const WORK: &str = "work";
 pub const CHECK: &str = "check";
 pub const OUT: &str = "out";
+pub const SOLUTION: &str = "solution";
 
 /// One graded run: build a workspace, optionally solve it, then check it.
 pub struct Run {
@@ -28,23 +30,50 @@ pub struct Run {
     pub check_stderr: String,
 }
 
+/// Copy a directory tree, refusing anything that is not a plain file or a directory.
+///
+/// One rule for every copy this tool makes, in both directions: an exercise and a
+/// workspace are plain files and directories. Nothing else has a defined meaning here
+/// and two of the alternatives are holes.
+///
+/// **Symlinks.** Following one reads a file the tree does not contain. On the exercise
+/// side that breaks the digest, which hashes a link by its target *string* while the
+/// copy reads the target's *content* — so `setup/data.csv` pointing at `/etc/shadow`
+/// has a digest that never changes while the bytes reaching the runner do. On the
+/// learner's side it is worse, because the learner writes that side: hidden grading
+/// copies `work/` into a sealed directory, and this copy runs on the host with this
+/// process's rights, before any sandbox exists. `ln -s ~/.ssh/id_rsa key` would be
+/// answered by copying the key somewhere a check script reads. Copying the link
+/// unfollowed would be safe under the sandbox and unsafe under `--unsafe-host`, so it
+/// is refused in both.
+///
+/// **Device nodes, sockets, fifos.** Nothing well-defined to hash or to copy, and a
+/// fifo would hang the copy.
+///
+/// A missing source directory is not an error: an exercise may have no `setup/`.
 pub(crate) fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
     let entries = match fs::read_dir(from) {
         Ok(e) => e,
-        // A missing source directory is not an error: an exercise may have no setup.
         Err(_) => return Ok(()),
     };
     for entry in entries {
         let entry = entry.map_err(|e| format!("{}: {e}", from.display()))?;
         let src = entry.path();
         let dst = to.join(entry.file_name());
-        let meta = entry
-            .metadata()
-            .map_err(|e| format!("{}: {e}", src.display()))?;
-        if meta.is_dir() {
+        // Not `entry.metadata()`: that follows links, and a link has to be seen to be
+        // refused.
+        let meta = fs::symlink_metadata(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+        let kind = meta.file_type();
+        if kind.is_symlink() {
+            return Err(format!(
+                "{}: symbolic link - not supported here, replace it with the file it \
+                 points at",
+                src.display()
+            ));
+        } else if kind.is_dir() {
             copy_dir(&src, &dst)?;
-        } else {
+        } else if kind.is_file() {
             fs::copy(&src, &dst).map_err(|e| format!("{}: {e}", src.display()))?;
             // Preserve the executable bit; a check script that cannot run is a
             // broken grader that looks like a failing exercise.
@@ -54,6 +83,8 @@ pub(crate) fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
                 let mode = meta.permissions().mode();
                 let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(mode));
             }
+        } else {
+            return Err(format!("{}: not a regular file or directory", src.display()));
         }
     }
     Ok(())
@@ -64,11 +95,17 @@ pub(crate) fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
 /// `solve` applies the reference solution before checking. Both directions run with
 /// the same deadline and the same working directory layout, so the only difference
 /// between them is whether the solution was applied.
+///
+/// The two halves are separate jobs with different views, and that is the point of
+/// splitting them: the reference solution never sees `check/`. A `solve.sh` that reads
+/// the hidden tests would pass the gate's first direction while proving nothing about
+/// whether the exercise is solvable from what the learner is given.
 pub fn run_once(
     exercise_dir: &Path,
     task: &Task,
     root: &Path,
     solve: bool,
+    backend: &Backend,
 ) -> Result<Run, String> {
     let work = root.join(WORK);
     let check = root.join(CHECK);
@@ -79,13 +116,18 @@ pub fn run_once(
 
     if solve {
         let solution = exercise_dir.join("solution");
-        let dst = root.join("solution");
+        let dst = root.join(SOLUTION);
         copy_dir(&solution, &dst)?;
         if !dst.join("solve.sh").exists() {
             return Err(format!("{}: no solution/solve.sh", exercise_dir.display()));
         }
-        let applied = Runner::in_dir(root, task.limits.learner_secs)
-            .run(&format!("cd {WORK} && sh ../solution/solve.sh"))?;
+        let applied = backend.run(&Job::new(
+            root,
+            &[(WORK, Access::Write), (SOLUTION, Access::Read)],
+            WORK,
+            "sh ../solution/solve.sh",
+            task.limits.learner_secs,
+        ))?;
         if !applied.succeeded() {
             return Ok(Run {
                 root: root.to_path_buf(),
@@ -98,11 +140,19 @@ pub fn run_once(
                 check_stderr: applied.stderr,
             });
         }
-        // The solution directory must not be visible to the checker.
+        // Gone before the checker runs, so a check script cannot read the answer it is
+        // supposed to be judging independently. The view would deny it anyway; this
+        // keeps the left-behind run directory honest for inspection too.
         let _ = fs::remove_dir_all(&dst);
     }
 
-    let outcome = Runner::in_dir(root, task.limits.check_secs).run(&task.verify.cmd)?;
+    let outcome = backend.run(&Job::new(
+        root,
+        &[(WORK, Access::Write), (CHECK, Access::Read), (OUT, Access::Write)],
+        "",
+        &task.verify.cmd,
+        task.limits.check_secs,
+    ))?;
 
     let reward_path = out.join(&task.verify.reward);
     let reward_text = fs::read_to_string(&reward_path).ok();
@@ -158,10 +208,11 @@ impl GateReport {
 ///
 /// The solved workspace is the right place to run it: it holds the reference answer,
 /// so a `run_cmd` that fails there fails for reasons the learner cannot fix.
-fn check_run_cmd(task: &Task, solution_root: &Path) -> Option<String> {
+fn check_run_cmd(task: &Task, solution_root: &Path, backend: &Backend) -> Option<String> {
     let cmd = task.workspace.run_cmd.as_deref()?;
     let secs = task.limits.learner_secs;
-    match Runner::in_dir(solution_root.join(WORK), secs).run(cmd) {
+    let job = Job::new(solution_root, &[(WORK, Access::Write)], WORK, cmd, secs);
+    match backend.run(&job) {
         Ok(o) if o.succeeded() => None,
         Ok(o) if o.timed_out => Some(format!("run_cmd timed out after {secs}s")),
         Ok(o) => Some(match o.exit_code {
@@ -177,11 +228,27 @@ fn check_run_cmd(task: &Task, solution_root: &Path) -> Option<String> {
 /// `scratch` must be on the same filesystem as anything large you care about; the
 /// two runs get their own subdirectories under it and are left in place for
 /// inspection.
-pub fn run_gate(exercise_dir: &Path, scratch: &Path, at: &str) -> Result<GateReport, String> {
-    // Taken before anything is read or run. This is the claim the verdict is about:
-    // the bytes the two runs are going to execute.
-    let before = crate::digest::exercise_digest(exercise_dir)?;
-    let task = exercise::load(exercise_dir)?;
+///
+/// Both runs read a frozen copy, never the exercise directory. Digesting a tree and
+/// then executing from it are two reads, and anything that changes in between is
+/// executed but not described - a file that moves to a second version and back is the
+/// clean case, but a script that rewrites its own directory is the likely one. Copying
+/// first collapses the two reads into one: the digest is of the snapshot, the runs are
+/// of the snapshot, and no window exists between them.
+pub fn run_gate(
+    exercise_dir: &Path,
+    scratch: &Path,
+    at: &str,
+    backend: &Backend,
+) -> Result<GateReport, String> {
+    let frozen = scratch.join("gate-frozen");
+    let _ = fs::remove_dir_all(&frozen);
+    copy_dir(exercise_dir, &frozen)?;
+
+    // The claim the verdict is about: the bytes the two runs are going to execute,
+    // read from the copy that will execute them.
+    let before = crate::digest::exercise_digest(&frozen)?;
+    let task = exercise::load(&frozen)?;
 
     let solution_root = scratch.join("gate-solution");
     let empty_root = scratch.join("gate-empty");
@@ -190,25 +257,24 @@ pub fn run_gate(exercise_dir: &Path, scratch: &Path, at: &str) -> Result<GateRep
     fs::create_dir_all(&solution_root).map_err(|e| e.to_string())?;
     fs::create_dir_all(&empty_root).map_err(|e| e.to_string())?;
 
-    let solution = run_once(exercise_dir, &task, &solution_root, true)?;
+    let solution = run_once(&frozen, &task, &solution_root, true, backend)?;
 
     // Advisory only, and only once the solution run has proved the exercise solvable:
     // a `run_cmd` failure against a workspace that does not even pass says nothing.
     let mut warnings = Vec::new();
     if solution.verdict.is_pass() {
-        warnings.extend(check_run_cmd(&task, &solution_root));
+        warnings.extend(check_run_cmd(&task, &solution_root, backend));
     }
 
-    let empty = run_once(exercise_dir, &task, &empty_root, false)?;
+    let empty = run_once(&frozen, &task, &empty_root, false, backend)?;
 
-    // The exercise must not have moved underneath its own gate. An editor left open
-    // during a slow gate, or a check script that writes back into the directory it was
-    // copied from, would otherwise be certified on bytes that were never run - and the
-    // digest stamped afterwards would make that undetectable ever after. Neither
-    // digest is trustworthy on its own here; only their agreement is.
+    // The snapshot is what ran, but the verdict is written next to the original, and
+    // it is the original a learner will sit down to. If the author edited it while the
+    // gate was working, this verdict describes a tree that is no longer there. Neither
+    // digest is trustworthy alone here; only their agreement is.
     let after = crate::digest::exercise_digest(exercise_dir)?;
     let outcome = if before == after {
-        exercise::gate_outcome(&solution.verdict, &empty.verdict, at, &before)
+        exercise::gate_outcome(&solution.verdict, &empty.verdict, at, &before, backend)
     } else {
         exercise::GateOutcome::Rejected(exercise::GateFailure::ContentChangedDuringGate {
             before: before.clone(),
@@ -283,6 +349,7 @@ mod tests {
             &exercise("failrun", Some("exit 2")),
             &scratch("failrun"),
             "t",
+            &Backend::select(false).expect("a sandbox"),
         )
         .expect("gate ran");
 
@@ -301,6 +368,7 @@ mod tests {
             &exercise("okrun", Some("cat answer.txt")),
             &scratch("okrun"),
             "t",
+            &Backend::select(false).expect("a sandbox"),
         )
         .expect("gate ran");
 
@@ -312,7 +380,7 @@ mod tests {
     /// advisory run existed, byte for byte.
     #[test]
     fn no_run_cmd_leaves_the_printed_report_byte_identical() {
-        let report = run_gate(&exercise("norun", None), &scratch("norun"), "t").expect("gate ran");
+        let report = run_gate(&exercise("norun", None), &scratch("norun"), "t", &Backend::select(false).expect("a sandbox")).expect("gate ran");
         assert!(report.warnings.is_empty());
 
         let before = serde_json::json!({

@@ -488,14 +488,72 @@ official migration path being "integrate directly with LLM provider APIs" — an
 harness implemented it anyway. A server cannot borrow the host's model. Its alternative
 is its own API key, which is exactly what turns a companion into a separate application.
 
-There is no sandbox. The code being graded is the learner's own solution to their own
-kata, on their own machine, so there is no adversary to isolate from — and isolation
-would cost a hard dependency on Linux namespace tooling to defend against a threat that
-does not exist. What the runner does enforce is a wall-clock deadline, killing the whole
-process group: an infinite loop in a draft solution is an ordinary mistake, and the gate
-has to report it as one instead of hanging. Killing only the shell is not enough — a
-backgrounded grandchild keeps the output pipes open, and reading them to end then never
-returns.
+### The execution boundary
+
+Gate and grade execute code written by a model and by a learner. `solution/solve.sh`
+and `check/check.sh` come out of a generator; the workspace command is whatever was
+typed. The runner treats all of it as untrusted.
+
+An earlier draft of this document argued the opposite — that the code being graded is
+the learner's own solution on their own machine, so there is no adversary to isolate
+from. That sentence was false about the code it described. The learner never writes
+`check.sh`, and it runs at *gate* time, before anyone has sat down to anything.
+
+The threat it got wrong is also not the interesting one. A malicious author is a
+possibility; a mistaken generator is a certainty. The failures that actually turn up
+are a delete with an unset variable in its path, a relative path that resolves out of
+the workspace, a loop that fills a disk, a process tree that will not die, a script
+that reads a credential file because it was in the training data. A warning printed
+before the fact contains none of them.
+
+So there is one execution interface and two backends behind it. A caller builds a job —
+a run directory, a list of children it may see and whether each is writable, a working
+directory, a script, a deadline — and hands it over. Every execution in the tool goes
+this way: both gate directions, the advisory `run_cmd`, `grade`, and the browser's Run
+and Submit.
+
+**Sandbox** is the default: a user, mount, PID, IPC, UTS and network namespace via
+`bubblewrap`, a read-only `/usr`, a synthetic one-line `/etc/passwd`, a bounded tmpfs
+for `/tmp`, a throwaway `$HOME`, an environment allowlist, and resource ceilings. The
+job's view of the filesystem is the list it was given and the read-only runtime.
+Nothing else is there — not the exercise directory, not the study state, not the user's
+home.
+
+**UnsafeHost** is the escape hatch, reachable only by passing `--unsafe-host`. It runs
+as the user, with the user's rights, over the whole filesystem. There is no prompt:
+`gate` runs unattended inside a generation loop, so consent has to be expressible as a
+flag. The name is the documentation, which is why it is not called `native` or
+`direct`.
+
+A missing sandbox is a refusal, not a downgrade. Claiming isolation while only changing
+the working directory is worse than not having it, because then the warnings stop being
+read.
+
+The two backends differ in isolation and deliberately in nothing else: same environment
+allowlist, same limits, same relative layout. When an exercise passes under one and
+fails under the other, the difference is isolation, and the search does not also have to
+cover a stray `PYTHONPATH`.
+
+Two things fall out of the view mechanism rather than being asked for. The gate's
+reference solution no longer sees `check/`, so a `solve.sh` cannot pass the first
+direction by reading the tests it is supposed to be independent of. And a grader cannot
+reach the exercise directory it was copied from, which retires a whole class of
+mid-gate corruption that the digest could previously only detect after the fact.
+
+What the sandbox does *not* give: reproducibility. `/usr` is bind-mounted from the host,
+so the interpreter and its packages are the host's. A verdict is not portable to another
+machine and never claimed to be — see the environment fingerprint above.
+
+One limit is namespace-only. `RLIMIT_NPROC` counts processes per user, not per tree, so
+on the host it is measured against the whole logged-in session: set below it nothing
+forks, set above it a fork bomb still has headroom. It needs a namespace to mean
+anything, and it is applied only where there is one.
+
+The wall-clock deadline predates all of this and still matters most. An infinite loop in
+a draft solution is an ordinary mistake and the gate has to report it as one rather than
+hanging. Killing only the shell is not enough — a backgrounded grandchild keeps the
+output pipes open, and reading them to end then never returns. Under the sandbox the PID
+namespace makes this total; on the host the process group is all there is.
 
 ### The browser runner
 

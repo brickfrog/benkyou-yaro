@@ -132,6 +132,86 @@ impl Env {
     }
 }
 
+/// How a verdict was executed.
+///
+/// A gate result claims a grader discriminates. That claim holds only under the
+/// conditions it was earned: an exercise that passes with the host filesystem in reach
+/// may fail sandboxed, and a grader that quietly read something outside its view would
+/// have been proved discriminating by evidence the learner's run will not have. So
+/// unlike [`Env`], a difference here is a refusal and not a warning — the verdict is
+/// about a run that can no longer happen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Runner {
+    /// [`crate::run::RUNNER_SEMANTICS`] at the time of gating.
+    pub semantics: u32,
+    /// `sandbox` or `unsafe-host`.
+    pub backend: String,
+    /// Execution profile: what the backend was, concretely.
+    pub profile: String,
+}
+
+impl Runner {
+    pub fn of(backend: &crate::run::Backend) -> Self {
+        Self {
+            semantics: crate::run::RUNNER_SEMANTICS,
+            backend: backend.name().to_string(),
+            profile: backend.profile(),
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        format!("{} ({})", self.backend, self.profile)
+    }
+
+    /// Why this record no longer describes the run that is about to happen.
+    ///
+    /// Two fields refuse and one warns, split by whether the difference changes what a
+    /// run *can do*.
+    ///
+    /// `semantics` refuses: this binary changed what a job may see or how it is
+    /// killed, so every verdict on disk describes a run that no longer exists.
+    ///
+    /// `backend` refuses too, and this is the load-bearing one. A grader that reaches
+    /// the network, or reads a file outside its view, discriminates on the host and
+    /// fails in the sandbox — so a host-earned verdict is not evidence about a
+    /// sandboxed attempt, and a sandbox-earned verdict was proved without capabilities
+    /// the host run will have. Accepting either would put the learner's grade on a
+    /// claim nobody tested. The refusal is also the honest direction: it pushes an
+    /// author who gated with `--unsafe-host` to re-gate sandboxed rather than leaving
+    /// a library half-proved.
+    ///
+    /// `profile` only warns. A bubblewrap point release is evidence about the run, not
+    /// a change in what the run could do, and invalidating a library on it would make
+    /// re-gating routine — which is how a refusal stops being read.
+    pub fn stale(&self, now: &Runner) -> Option<String> {
+        if self.semantics != now.semantics {
+            return Some(format!(
+                "runner semantics {} on record, {} now",
+                self.semantics, now.semantics
+            ));
+        }
+        if self.backend != now.backend {
+            return Some(format!(
+                "gated under the {} backend, running the {} backend",
+                self.backend, now.backend
+            ));
+        }
+        None
+    }
+
+    /// Differences worth printing but not worth refusing over.
+    pub fn drift(&self, now: &Runner) -> Vec<String> {
+        if self.backend == now.backend && self.profile != now.profile {
+            vec![format!(
+                "gated with {}, running {}",
+                self.profile, now.profile
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 /// The gate's verdict, stored beside the exercise rather than inside it.
 ///
 /// This lives in `.gate.json`, not in `task.toml`, and the separation is what makes
@@ -153,6 +233,8 @@ pub struct Gate {
     /// hidden case edited after gating would leave an exercise showable on the
     /// strength of a run that no longer describes it.
     pub digest: String,
+    /// How it was executed. Without this the verdict outlives its *conditions*.
+    pub runner: Runner,
     pub env: Env,
 }
 
@@ -222,21 +304,33 @@ pub fn read_gate(dir: &Path) -> Result<Option<Gate>, String> {
 }
 
 /// Record the gate's verdict beside the exercise, leaving authored files untouched.
+///
+/// Written to a temporary name and renamed into place. A verdict is read by every
+/// door and by the next gate run; a half-written one is a parse error that reads as
+/// corruption, and losing power between `open` and `write` would turn a validated
+/// exercise into a broken one. `rename` within a directory is atomic, so a reader sees
+/// the old record or the new one.
 pub fn write_gate(dir: &Path, gate: &Gate) -> Result<(), String> {
     let path = dir.join(GATE_FILE);
+    let tmp = dir.join(format!("{GATE_FILE}.{}.tmp", std::process::id()));
     let text = serde_json::to_string_pretty(gate).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
+    std::fs::write(&tmp, text + "\n").map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{}: {e}", path.display())
+    })
 }
 
-/// Refuse an exercise whose gate verdict is missing, negative, or no longer describes
-/// the files on disk.
+/// Refuse an exercise whose gate verdict is missing, negative, earned under different
+/// execution conditions, or no longer describing the files on disk.
 ///
-/// Three ways to fail, kept distinct because they need different things from the
+/// Four ways to fail, kept distinct because they need different things from the
 /// reader. No record: run the gate. A record that says the exercise was *rejected*:
 /// this is not an exercise, and re-running the gate will say so again. A record earned
+/// under a runner that no longer exists: run it again, under this one. A record earned
 /// by different bytes: run it again, because the stamp is about a file that no longer
 /// exists.
-pub fn require_current(dir: &Path) -> Result<(), String> {
+pub fn require_current(dir: &Path, backend: &crate::run::Backend) -> Result<(), String> {
     let gate = read_gate(dir)?.ok_or_else(|| {
         format!(
             "{}: not validated - run `benkyou gate` on it first",
@@ -249,6 +343,12 @@ pub fn require_current(dir: &Path) -> Result<(), String> {
             dir.display(),
             gate.solution_passes,
             gate.empty_fails
+        ));
+    }
+    if let Some(why) = gate.runner.stale(&Runner::of(backend)) {
+        return Err(format!(
+            "{}: {why} - run `benkyou gate` again",
+            dir.display()
         ));
     }
     let actual = crate::digest::exercise_digest(dir)?;
@@ -268,9 +368,13 @@ pub fn require_current(dir: &Path) -> Result<(), String> {
 /// Separate from [`require_current`] on purpose, mirroring the gate's own split
 /// between an outcome and its warnings: the caller decides whether it has anywhere to
 /// print these, and nothing changes if it does not.
-pub fn gate_warnings(dir: &Path) -> Vec<String> {
+pub fn gate_warnings(dir: &Path, backend: &crate::run::Backend) -> Vec<String> {
     match read_gate(dir) {
-        Ok(Some(gate)) => gate.env.drift(&Env::current()),
+        Ok(Some(gate)) => {
+            let mut out = gate.env.drift(&Env::current());
+            out.extend(gate.runner.drift(&Runner::of(backend)));
+            out
+        }
         _ => Vec::new(),
     }
 }
@@ -413,7 +517,13 @@ pub enum GateOutcome {
 /// Run 1 applies `solution/solve.sh` and must pass. Run 2 leaves `setup/` untouched
 /// and must fail. Both are required: run 1 alone admits a vacuous check that passes on
 /// an empty workspace, and run 2 alone admits an unsolvable exercise.
-pub fn gate_outcome(solution: &Verdict, empty: &Verdict, at: &str, digest: &str) -> GateOutcome {
+pub fn gate_outcome(
+    solution: &Verdict,
+    empty: &Verdict,
+    at: &str,
+    digest: &str,
+    backend: &crate::run::Backend,
+) -> GateOutcome {
     if !solution.is_pass() {
         return GateOutcome::Rejected(GateFailure::SolutionFailed(solution.clone()));
     }
@@ -426,6 +536,7 @@ pub fn gate_outcome(solution: &Verdict, empty: &Verdict, at: &str, digest: &str)
         empty_fails: true,
         validated_at: at.to_string(),
         digest: digest.to_string(),
+        runner: Runner::of(backend),
         env: Env::current(),
     })
 }
@@ -528,19 +639,19 @@ mod tests {
 
         // Both hold.
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &fail, "t", "d"),
+            gate_outcome(&Verdict::Pass, &fail, "t", "d", &crate::run::Backend::UnsafeHost),
             GateOutcome::Validated(_)
         ));
 
         // Unsolvable as written.
         assert!(matches!(
-            gate_outcome(&fail, &fail, "t", "d"),
+            gate_outcome(&fail, &fail, "t", "d", &crate::run::Backend::UnsafeHost),
             GateOutcome::Rejected(GateFailure::SolutionFailed(_))
         ));
 
         // Vacuous: the empty workspace already passes.
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &Verdict::Pass, "t", "d"),
+            gate_outcome(&Verdict::Pass, &Verdict::Pass, "t", "d", &crate::run::Backend::UnsafeHost),
             GateOutcome::Rejected(GateFailure::ChecksVacuous(_))
         ));
     }
@@ -551,7 +662,7 @@ mod tests {
     fn a_broken_grader_on_the_empty_run_does_not_validate() {
         let broken = Verdict::CheckBroken("boom".into());
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &broken, "t", "d"),
+            gate_outcome(&Verdict::Pass, &broken, "t", "d", &crate::run::Backend::UnsafeHost),
             GateOutcome::Rejected(GateFailure::ChecksVacuous(_))
         ));
     }
@@ -562,6 +673,7 @@ mod tests {
             empty_fails,
             validated_at: "t".into(),
             digest: "d".into(),
+            runner: Runner::of(&crate::run::Backend::UnsafeHost),
             env: Env::current(),
         }
     }
@@ -573,24 +685,61 @@ mod tests {
         assert!(!gate(false, true).holds(), "the solution never passed");
     }
 
-    /// A recorded rejection and no record at all are different states, and the
-    /// difference is what the reader needs: one says re-gate, the other says this is
-    /// not an exercise.
+    /// Four ways to be unshowable, each needing a different thing from the reader.
+    /// One assertion per state, because a single "it refused" check passes for the
+    /// wrong reason — everything refuses when nothing is gated.
     #[test]
-    fn a_recorded_rejection_is_refused_distinctly() {
+    fn each_way_to_be_unshowable_is_reported_distinctly() {
+        let host = crate::run::Backend::UnsafeHost;
         let dir = std::env::temp_dir().join(format!("benkyou-gaterec-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         std::fs::write(dir.join("task.toml"), "schema_version = \"1\"\n").expect("write");
 
-        let missing = require_current(&dir).expect_err("no record must refuse");
+        let missing = require_current(&dir, &host).expect_err("no record must refuse");
         assert!(missing.contains("not validated"), "{missing}");
 
         write_gate(&dir, &gate(true, false)).expect("write gate");
-        let rejected = require_current(&dir).expect_err("a recorded failure must refuse");
+        let rejected = require_current(&dir, &host).expect_err("a recorded failure must refuse");
         assert!(rejected.contains("rejected this exercise"), "{rejected}");
 
+        // Gated under one runner, read under another. The verdict was earned with
+        // capabilities this run will not have, or without ones it will.
+        write_gate(&dir, &gate(true, true)).expect("write gate");
+        let sandboxed = crate::run::Backend::Sandbox {
+            bwrap: "/usr/bin/bwrap".into(),
+            version: "0.0.0".into(),
+        };
+        let swapped = require_current(&dir, &sandboxed).expect_err("backend swap must refuse");
+        assert!(swapped.contains("backend"), "{swapped}");
+
+        // Same runner, wrong bytes: the digest is "d" and the directory hashes to
+        // something else.
+        let edited = require_current(&dir, &host).expect_err("a stale digest must refuse");
+        assert!(edited.contains("changed since it was gated"), "{edited}");
+
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bubblewrap point release is evidence about the run, not a change in what the
+    /// run could do. Refusing on it would make re-gating routine, which is how a
+    /// refusal stops being read.
+    #[test]
+    fn a_profile_change_warns_and_a_backend_change_refuses() {
+        let a = Runner::of(&crate::run::Backend::Sandbox {
+            bwrap: "/usr/bin/bwrap".into(),
+            version: "0.11.2".into(),
+        });
+        let b = Runner::of(&crate::run::Backend::Sandbox {
+            bwrap: "/usr/bin/bwrap".into(),
+            version: "0.11.3".into(),
+        });
+        assert!(a.stale(&b).is_none(), "a point release must not ungate a library");
+        assert_eq!(a.drift(&b).len(), 1, "but it must still be reported");
+
+        let host = Runner::of(&crate::run::Backend::UnsafeHost);
+        assert!(a.stale(&host).is_some(), "isolation changed and the verdict did not");
+        assert!(a.drift(&host).is_empty(), "a refusal is not also a warning");
     }
 
     #[test]

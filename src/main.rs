@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use benkyou::assess::{self, AssessConfig, RecordOutcome, Step};
 use benkyou::exercise::{self, GateOutcome, Task};
 use benkyou::gate::run_gate;
+use benkyou::run::Backend;
 use benkyou::graph::{
     Edge, EdgeType, Goal, Graph, Kind, Node, Provenance, State, Verdict, NODE_CAP, RELEVANCE_FLOOR,
 };
@@ -132,6 +133,18 @@ FILES
   path from the task, so they cannot be pointed at different directories by accident.
   Pass --work to override.
 
+EXECUTION
+  `gate`, `attempt`, `grade` and `serve` run generated scripts in a sandbox: no
+  network, no host filesystem beyond a read-only /usr, no access to your goals or
+  workspaces, a throwaway HOME, a scrubbed environment, and resource ceilings. It
+  needs `bwrap` (bubblewrap). Without it these commands refuse rather than run
+  unprotected.
+
+  --unsafe-host turns the sandbox off for one invocation. Generated scripts then run
+  as you, over your whole filesystem. A gate verdict records which backend earned it
+  and the other backend refuses it, so this is a choice you keep making rather than
+  one you make once.
+
 Every command prints JSON on success unless stated otherwise.
 ";
 
@@ -157,10 +170,29 @@ fn main() -> ExitCode {
 /// success, and a caller parsing that must not have to learn a new field to stay
 /// working. Advisory means advisory - nothing here can stop the command, mirroring the
 /// gate's own split between an outcome and its warnings.
-fn warn_drift(dir: &std::path::Path) {
-    for note in exercise::gate_warnings(dir) {
+fn warn_drift(dir: &std::path::Path, backend: &Backend) {
+    for note in exercise::gate_warnings(dir, backend) {
         eprintln!("benkyou: {}: {note}", dir.display());
     }
+}
+
+/// Choose the execution backend for this invocation.
+///
+/// Sandboxed unless the caller says otherwise in as many words. The absence of a
+/// sandbox is an error and not a silent downgrade: every script this tool runs was
+/// written by a model or by a learner, and the difference between running one in a
+/// container and running one as the user is the difference the caller has to consent
+/// to. No prompt, because `gate` runs unattended in the middle of a generation loop —
+/// a flag or nothing.
+fn backend(args: &[String]) -> Result<Backend, String> {
+    let unsafe_host = args.iter().any(|a| a == "--unsafe-host");
+    if unsafe_host {
+        eprintln!(
+            "benkyou: --unsafe-host: running generated scripts with your own user's \
+             rights, outside any sandbox"
+        );
+    }
+    Backend::select(unsafe_host)
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
@@ -173,7 +205,7 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 /// Flags that take no value. Without this list `positional` eats the argument after
 /// a boolean flag, so `cards --push cards.json` loses the file — the flag consumes
 /// it and the command reports a missing argument for something plainly there.
-const VALUELESS: &[&str] = &["--help", "--version", "--push", "--no-open"];
+const VALUELESS: &[&str] = &["--help", "--version", "--push", "--no-open", "--unsafe-host"];
 
 fn positional(args: &[String]) -> Vec<&String> {
     let mut out = Vec::new();
@@ -702,7 +734,8 @@ fn run(args: &[String]) -> Result<String, String> {
                 .unwrap_or_else(std::env::temp_dir);
             std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
             let at = store::now_iso();
-            let report = run_gate(&dir, &scratch, &at)?;
+            let backend = backend(args)?;
+            let report = run_gate(&dir, &scratch, &at, &backend)?;
             let body = report.json();
             let text = json(&body)?;
             match report.outcome {
@@ -730,8 +763,9 @@ fn run(args: &[String]) -> Result<String, String> {
             let task = exercise::load(&dir)?;
             let root = work_root(args, &dir, &task)?;
             std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-            warn_drift(&dir);
-            let work = benkyou::attempt::open(&dir, &root)?;
+            let backend = backend(args)?;
+            warn_drift(&dir, &backend);
+            let work = benkyou::attempt::open(&dir, &root, &backend)?;
             json(&serde_json::json!({
                 "workspace": work,
                 "concept": task.task.concept_id,
@@ -750,10 +784,11 @@ fn run(args: &[String]) -> Result<String, String> {
             if dirs.is_empty() {
                 return Err("serve: name at least one exercise directory".into());
             }
-            dirs.iter().for_each(|d| warn_drift(d));
+            let backend = backend(args)?;
+            dirs.iter().for_each(|d| warn_drift(d, &backend));
             let items = dirs
                 .iter()
-                .map(|d| benkyou::browser::Item::load(d))
+                .map(|d| benkyou::browser::Item::load(d, &backend))
                 .collect::<Result<Vec<_>, _>>()?;
 
             let goal = match flag(args, "--goal") {
@@ -773,7 +808,7 @@ fn run(args: &[String]) -> Result<String, String> {
             };
             let server = benkyou::serve::bind(port)?;
             let url = format!("http://127.0.0.1:{}/?t={}", server.port(), server.token());
-            let app = benkyou::browser::App::new(items, goal, server.shutdown_handle());
+            let app = benkyou::browser::App::new(items, goal, server.shutdown_handle(), backend);
 
             println!("{url}");
             if !args.iter().any(|a| a == "--no-open") {
@@ -787,8 +822,9 @@ fn run(args: &[String]) -> Result<String, String> {
             let dir = need(0, "exercise-dir")?;
             let task = exercise::load(&dir)?;
             let root = work_root(args, &dir, &task)?;
-            warn_drift(&dir);
-            let attempt = benkyou::attempt::grade(&dir, &task, &root)?;
+            let backend = backend(args)?;
+            warn_drift(&dir, &backend);
+            let attempt = benkyou::attempt::grade(&dir, &task, &root, &backend)?;
             let score = benkyou::attempt::practice_score(&attempt.verdict);
 
             let mut practice = serde_json::Value::Null;

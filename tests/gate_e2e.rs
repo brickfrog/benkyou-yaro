@@ -8,6 +8,13 @@ use std::path::PathBuf;
 
 use benkyou::exercise::{self, GateFailure, GateOutcome, Verdict};
 use benkyou::gate::run_gate;
+use benkyou::run::Backend;
+
+/// Every test runs under the backend a user gets by default. Proving containment
+/// against anything else would prove nothing.
+fn sandbox() -> Backend {
+    Backend::select(false).expect("a sandbox: install bubblewrap")
+}
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -25,7 +32,7 @@ fn scratch(name: &str) -> PathBuf {
 /// A well-formed exercise passes both directions.
 #[test]
 fn a_sound_exercise_is_validated() {
-    let report = run_gate(&fixture("dedupe"), &scratch("sound"), "2026-08-05T00:00:00Z")
+    let report = run_gate(&fixture("dedupe"), &scratch("sound"), "2026-08-05T00:00:00Z", &sandbox())
         .expect("gate ran");
 
     assert!(
@@ -70,7 +77,7 @@ fn a_vacuous_check_is_rejected() {
     .expect("write");
 
     let report =
-        run_gate(&dir, &scratch("vacuous"), "2026-08-05T00:00:00Z").expect("gate ran");
+        run_gate(&dir, &scratch("vacuous"), "2026-08-05T00:00:00Z", &sandbox()).expect("gate ran");
 
     match report.outcome {
         GateOutcome::Rejected(GateFailure::ChecksVacuous(_)) => {}
@@ -103,7 +110,7 @@ fn an_unsolvable_exercise_is_rejected() {
     .expect("write");
 
     let report =
-        run_gate(&dir, &scratch("unsolvable"), "2026-08-05T00:00:00Z").expect("gate ran");
+        run_gate(&dir, &scratch("unsolvable"), "2026-08-05T00:00:00Z", &sandbox()).expect("gate ran");
 
     match report.outcome {
         GateOutcome::Rejected(GateFailure::SolutionFailed(_)) => {}
@@ -115,7 +122,7 @@ fn an_unsolvable_exercise_is_rejected() {
 /// "wrong on these inputs" teaches and "3/7 failed" does not.
 #[test]
 fn the_graders_detail_reaches_the_caller() {
-    let report = run_gate(&fixture("dedupe"), &scratch("detail"), "t").expect("gate ran");
+    let report = run_gate(&fixture("dedupe"), &scratch("detail"), "t", &sandbox()).expect("gate ran");
     let reward = fs::read_to_string(report.empty.root.join("out/reward.json"))
         .expect("empty run wrote a reward file");
     assert!(
@@ -149,7 +156,7 @@ fn copy_fixture(name: &str) -> PathBuf {
 #[test]
 fn gating_records_the_content_and_the_exercise_becomes_showable() {
     let dir = copy_fixture("stamp");
-    let report = run_gate(&dir, &scratch("stamp-run"), "t").expect("gate ran");
+    let report = run_gate(&dir, &scratch("stamp-run"), "t", &sandbox()).expect("gate ran");
     let gate = match report.outcome {
         GateOutcome::Validated(g) => g,
         other => panic!("expected Validated, got {other:?}"),
@@ -158,7 +165,7 @@ fn gating_records_the_content_and_the_exercise_becomes_showable() {
 
     assert_eq!(gate.digest.len(), 64, "a sha-256 hex digest");
     assert_eq!(gate.env, exercise::Env::current());
-    exercise::require_current(&dir).expect("a freshly gated exercise must be showable");
+    exercise::require_current(&dir, &sandbox()).expect("a freshly gated exercise must be showable");
 
     // The authored files are untouched: the verdict went to the sidecar.
     let pristine = fs::read_to_string(fixture("dedupe").join("task.toml")).expect("read");
@@ -182,16 +189,16 @@ fn editing_any_content_after_gating_ungates_the_exercise() {
 
     for (i, (what, rel, content)) in edits.into_iter().enumerate() {
         let dir = copy_fixture(&format!("edit-{i}"));
-        let report = run_gate(&dir, &scratch(&format!("edit-run-{i}")), "t").expect("gate ran");
+        let report = run_gate(&dir, &scratch(&format!("edit-run-{i}")), "t", &sandbox()).expect("gate ran");
         let gate = match report.outcome {
             GateOutcome::Validated(g) => g,
             other => panic!("{what}: expected Validated, got {other:?}"),
         };
         exercise::write_gate(&dir, &gate).expect("write gate");
-        exercise::require_current(&dir).expect("showable before the edit");
+        exercise::require_current(&dir, &sandbox()).expect("showable before the edit");
 
         fs::write(dir.join(rel), content).expect("edit");
-        let err = exercise::require_current(&dir)
+        let err = exercise::require_current(&dir, &sandbox())
             .expect_err(&format!("editing {what} left the exercise showable"));
         assert!(err.contains("changed since it was gated"), "{what}: {err}");
     }
@@ -207,7 +214,7 @@ fn editing_the_task_file_ungates_the_exercise() {
     {
         let dir = copy_fixture(&format!("task-edit-{i}"));
         let report =
-            run_gate(&dir, &scratch(&format!("task-edit-run-{i}")), "t").expect("gate ran");
+            run_gate(&dir, &scratch(&format!("task-edit-run-{i}")), "t", &sandbox()).expect("gate ran");
         let gate = match report.outcome {
             GateOutcome::Validated(g) => g,
             other => panic!("expected Validated, got {other:?}"),
@@ -219,7 +226,7 @@ fn editing_the_task_file_ungates_the_exercise() {
         text.push_str(addition);
         fs::write(&path, text).expect("write");
 
-        let err = exercise::require_current(&dir).expect_err("task.toml edit was not noticed");
+        let err = exercise::require_current(&dir, &sandbox()).expect_err("task.toml edit was not noticed");
         assert!(err.contains("changed since it was gated"), "{err}");
     }
 }
@@ -229,7 +236,7 @@ fn editing_the_task_file_ungates_the_exercise() {
 #[test]
 fn rewriting_a_file_unchanged_keeps_the_exercise_showable() {
     let dir = copy_fixture("touch");
-    let report = run_gate(&dir, &scratch("touch-run"), "t").expect("gate ran");
+    let report = run_gate(&dir, &scratch("touch-run"), "t", &sandbox()).expect("gate ran");
     let gate = match report.outcome {
         GateOutcome::Validated(g) => g,
         other => panic!("expected Validated, got {other:?}"),
@@ -240,30 +247,62 @@ fn rewriting_a_file_unchanged_keeps_the_exercise_showable() {
     let same = fs::read(&path).expect("read");
     fs::write(&path, same).expect("rewrite");
 
-    exercise::require_current(&dir).expect("an identical rewrite must not ungate");
+    exercise::require_current(&dir, &sandbox()).expect("an identical rewrite must not ungate");
 }
 
-/// An exercise that moves while its own gate is running cannot be certified: neither
-/// run describes what is now on disk. The grader edits the directory it was copied
-/// from, which is the realistic version of an editor left open.
+/// An exercise that moves while its own gate is running cannot be certified: the runs
+/// describe a snapshot, and the verdict is written next to a directory that is no
+/// longer that snapshot.
+///
+/// The scenario used to be "a check script writes back into the directory it was
+/// copied from". The sandbox retired that one — a grader cannot reach its own source
+/// any more, and this test used to prove it by failing here. What is left is an editor
+/// saving mid-gate, or a second process touching the tree, so that is what this does:
+/// a slow grader and a concurrent write.
 #[test]
 fn an_exercise_that_changes_mid_gate_is_rejected() {
     let dir = copy_fixture("midgate");
-    let marker = dir.join("check/scribble.txt");
-    fs::write(
-        dir.join("check/check.sh"),
-        format!(
-            "#!/bin/sh\nmkdir -p out\ndate >> {}\nprintf '{{\"correctness\": 1.0}}' > out/reward.json\nexit 0\n",
-            marker.display()
-        ),
-    )
-    .expect("write");
+    let check = dir.join("check/check.sh");
+    let body = fs::read_to_string(&check).expect("read");
+    fs::write(&check, body.replace("#!/bin/sh", "#!/bin/sh\nsleep 2")).expect("write");
 
-    let report = run_gate(&dir, &scratch("midgate-run"), "t").expect("gate ran");
+    let editing = dir.clone();
+    let editor = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let path = editing.join("instruction.md");
+        let mut text = fs::read_to_string(&path).unwrap_or_default();
+        text.push_str("\n\nan edit the author made while the gate was running\n");
+        fs::write(&path, text).expect("edit mid-gate");
+    });
+
+    let report = run_gate(&dir, &scratch("midgate-run"), "t", &sandbox()).expect("gate ran");
+    editor.join().expect("editor");
+
     match report.outcome {
         GateOutcome::Rejected(GateFailure::ContentChangedDuringGate { before, after }) => {
             assert_ne!(before, after);
         }
         other => panic!("expected ContentChangedDuringGate, got {other:?}"),
     }
+}
+
+/// The retired half of the test above, kept as a property in its own right: a grader
+/// cannot reach the exercise directory it was copied from. Before the sandbox this was
+/// a live hazard the digest could only detect after the fact.
+#[test]
+fn a_grader_cannot_reach_the_exercise_directory() {
+    let dir = copy_fixture("noreach");
+    let marker = dir.join("check/scribble.txt");
+    fs::write(
+        dir.join("check/check.sh"),
+        format!(
+            "#!/bin/sh\nmkdir -p out\ndate >> {}\n\
+             printf '{{\"correctness\": 1.0}}' > out/reward.json\nexit 0\n",
+            marker.display()
+        ),
+    )
+    .expect("write");
+
+    run_gate(&dir, &scratch("noreach-run"), "t", &sandbox()).expect("gate ran");
+    assert!(!marker.exists(), "a grader wrote into its own source directory");
 }

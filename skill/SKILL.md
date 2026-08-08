@@ -305,25 +305,23 @@ Other rules that cost real debugging:
   both use `DIR/work`; pointing either at the workspace itself gives
   `<dir>/work: no workspace here yet`. The run directory is cleaned up afterwards, so
   `out/reward.json` is not left around to inspect.
-- **Python graders run under `uv run --no-project`, never bare `python3`.** Declare
-  the interpreter and every dependency in a PEP 723 header at the top of the script:
+- **Python graders call bare `python3` and use what the machine has installed.** The
+  sandbox has no network, so `uv run` cannot resolve and a PEP 723 header buys nothing:
+  `uv` fails on DNS before it reads your dependency list. `/usr` is mounted read-only,
+  so system site-packages are available and a virtualenv is not.
 
-  ```python
-  # /// script
-  # requires-python = ">=3.11"
-  # dependencies = ["pandas>=2"]
-  # ///
-  ```
-
-  A missing library is then a resolution step, not a reason to rewrite the exercise.
-  Never water a kata down to what happens to be installed — a `pandas_groupby` node
+  This is a real cost of isolation and it is worth stating plainly: dependencies are no
+  longer declarable per exercise. If a kata needs pandas, pandas has to be installed on
+  the machine, and the gate will tell you it is not by rejecting the exercise. Never
+  water a kata down to what happens to be installed instead — a `pandas_groupby` node
   graded on hand-rolled `collections` code records fluency the learner did not earn.
-- **The verdict is the last line of output, not the exit code.** `uv` exits 1 when it
-  cannot build the environment, which is the same code a wrong answer uses; keying on
-  it scores a correct solution 0.0 on an offline box. Print `VERDICT pass <detail>` or
-  `VERDICT fail <detail>` as the final line, collapsed to one line, and have `check.sh`
-  read only `tail -n 1`. Matching anywhere in the output lets a solution that merely
-  prints `VERDICT pass` grade itself.
+  Install the library, or write a different exercise.
+- **The verdict is the last line of output, not the exit code.** An interpreter exits 1
+  for an import error, a syntax error and a wrong answer alike, and only the last of
+  those is the learner's. Print `VERDICT pass <detail>` or `VERDICT fail <detail>` as
+  the final line, collapsed to one line, and have `check.sh` read only `tail -n 1`.
+  Matching anywhere in the output lets a solution that merely prints `VERDICT pass`
+  grade itself.
 - **A solution that will not import, or returns junk, is a wrong answer.** Wrap the
   module load and keep every comparison total — no bare `float(x)` on learner output.
   A grader that crashes reports itself broken and the attempt is discarded, so a
@@ -333,6 +331,21 @@ Other rules that cost real debugging:
 - Gating is non-destructive: it writes `.gate.json` and leaves the authored files
   byte-identical. Re-gate after every edit, however small — the verdict is bound to
   the content, and a stale one refuses rather than lies.
+- **There is no network.** Every script you write runs in a sandbox with no route out.
+  A `setup/` that downloads a dataset, a grader that calls an API, a `pip install` at
+  check time — all fail, and they fail at gate time rather than on the learner. Ship
+  the data in `setup/` or generate it in the script.
+- **You get the machine's interpreter and its installed packages, nothing else.** `/usr`
+  is visible read-only; a virtualenv, `~/.local/lib`, and anything under a home
+  directory are not. A grader that needs a package the machine does not have is an
+  exercise that cannot be gated. A PEP 723 header with `uv run` will not save you here,
+  because `uv` would have to reach the network to resolve.
+- **Nothing outside the exercise exists.** No home directory, no absolute paths into
+  the user's filesystem, no writing next to the exercise directory. Work relative to
+  `work/`, `check/` and `out/`, and put scratch files in `/tmp`, which is a private
+  256 MiB tmpfs.
+- **The reference solution cannot read `check/`.** The gate runs it with the hidden
+  tests unmounted, so a `solve.sh` that peeks does not merely cheat — it fails.
 
 ## Judging free-text answers
 
@@ -356,10 +369,13 @@ Be straight with the user about this rather than implying otherwise:
 - Nothing *infers* whether a `skill` node is machine-gradable. You declare it with
   `"gradable": false` and the tool honours that; unmarked, it assumes an exercise is
   possible.
-- No sandbox. During grading the check scripts sit beside `work/` and the verify command
-  runs in that directory, so a solution that goes looking can read its own grader — and
-  a Python grader imports the learner's module into its own process. `attempt` keeps
-  `check/` out of the learner's workspace, which stops you stumbling onto the answer; it
-  is not a defence against deciding to find it. Whoever writes the solution should not
-  read `check/`.
+- No reproducibility from the sandbox. Scripts run isolated — no network, no host files,
+  no study state — but `/usr` is the host's, so the interpreter and its packages are
+  whatever the machine has. A verdict does not travel to another machine.
+- The sandbox is not a defence against a solution author who goes looking. During
+  grading the check scripts sit beside `work/` and the verify command runs in that
+  directory, so a solution that goes looking can read its own grader — and a Python
+  grader imports the learner's module into its own process. The gate's own reference
+  run is the exception: it cannot see `check/` at all. Whoever writes the solution
+  should still not read `check/`.
 - No backups. `validate` rewrites the goal file in place.

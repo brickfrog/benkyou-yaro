@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::exercise::{self, Task, Verdict};
 use crate::gate::{copy_dir, CHECK, OUT, WORK};
-use crate::run::Runner;
+use crate::run::{Access, Backend, Job};
 
 /// The result of grading one attempt.
 ///
@@ -45,8 +45,8 @@ pub struct Attempt {
 ///
 /// Refuses a workspace that already holds files rather than overwriting one — the
 /// thing at risk here is unsaved work.
-pub fn open(exercise_dir: &Path, root: &Path) -> Result<PathBuf, String> {
-    exercise::require_current(exercise_dir)?;
+pub fn open(exercise_dir: &Path, root: &Path, backend: &Backend) -> Result<PathBuf, String> {
+    exercise::require_current(exercise_dir, backend)?;
     let work = root.join(WORK);
     let occupied = fs::read_dir(&work)
         .map(|mut d| d.next().is_some())
@@ -74,18 +74,23 @@ pub fn open(exercise_dir: &Path, root: &Path) -> Result<PathBuf, String> {
 /// Refuses an ungated or edited exercise for the same reason [`open`] does, and with
 /// more at stake: a grader nobody proved discriminating would still write a score into
 /// the learner's fluency, where it decides what they are shown next.
-pub fn grade(exercise_dir: &Path, task: &Task, root: &Path) -> Result<Attempt, String> {
-    exercise::require_current(exercise_dir)?;
+pub fn grade(
+    exercise_dir: &Path,
+    task: &Task,
+    root: &Path,
+    backend: &Backend,
+) -> Result<Attempt, String> {
+    exercise::require_current(exercise_dir, backend)?;
     let work = root.join(WORK);
     if !work.exists() {
         return Err(format!("{}: no workspace here yet", work.display()));
     }
     if !task.verify.hidden {
-        return grade_in(exercise_dir, task, root);
+        return grade_in(exercise_dir, task, root, backend);
     }
     let sealed = throwaway_dir()?;
     copy_dir(&work, &sealed.join(WORK))?;
-    let result = grade_in(exercise_dir, task, &sealed);
+    let result = grade_in(exercise_dir, task, &sealed, backend);
     let _ = fs::remove_dir_all(&sealed);
     result
 }
@@ -93,7 +98,12 @@ pub fn grade(exercise_dir: &Path, task: &Task, root: &Path) -> Result<Attempt, S
 /// Run the grader against a prepared root. `check/` is re-copied and `out/` cleared
 /// every time: the grader is not the learner's to edit, and a stale reward file must
 /// never be read as a fresh result.
-fn grade_in(exercise_dir: &Path, task: &Task, root: &Path) -> Result<Attempt, String> {
+fn grade_in(
+    exercise_dir: &Path,
+    task: &Task,
+    root: &Path,
+    backend: &Backend,
+) -> Result<Attempt, String> {
     let check = root.join(CHECK);
     let out = root.join(OUT);
     let _ = fs::remove_dir_all(&check);
@@ -101,7 +111,13 @@ fn grade_in(exercise_dir: &Path, task: &Task, root: &Path) -> Result<Attempt, St
     copy_dir(&exercise_dir.join("check"), &check)?;
     fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
 
-    let outcome = Runner::in_dir(root, task.limits.check_secs).run(&task.verify.cmd)?;
+    let outcome = backend.run(&Job::new(
+        root,
+        &[(WORK, Access::Write), (CHECK, Access::Read), (OUT, Access::Write)],
+        "",
+        &task.verify.cmd,
+        task.limits.check_secs,
+    ))?;
     let reward = fs::read_to_string(out.join(&task.verify.reward)).ok();
     let verdict = exercise::grade(
         &task.verify,
