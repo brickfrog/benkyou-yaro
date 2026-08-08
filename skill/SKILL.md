@@ -61,9 +61,10 @@ benkyou seed ramp --known a,b --unknown x      # what they already know, in one 
 benkyou ask ramp                               # highest-leverage question
 benkyou record ramp <node> pass|partial|fail|skip
 benkyou order ramp --kind exercise             # what to generate, and for whom
-benkyou gate <dir> --scratch /tmp/x           # prove the exercise is real
-benkyou attempt <dir>                         # lay out a workspace for the learner
-benkyou grade <dir> --goal ramp                # run their grader, record fluency
+benkyou gate <dir> --scratch /tmp/x           # prove the exercise is real, and bank it
+benkyou items --concept <id>                   # banked exercises, reusable by digest
+benkyou attempt <dir|digest>                   # lay out a workspace for the learner
+benkyou grade <dir|digest> --goal ramp         # run their grader, record fluency
 benkyou practice ramp <node> 0.6               # a score you judged, where nothing runs
 benkyou session ramp                           # what to practise today
 ```

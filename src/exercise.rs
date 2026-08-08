@@ -386,11 +386,20 @@ pub struct Task {
 /// A missing file is `None`, not an error: not having been gated is an ordinary state.
 /// A file that will not parse *is* an error - something wrote it, and silently
 /// treating corruption as "ungated" would hide the corruption.
+///
+/// A banked bundle has no sidecar, deliberately: the bundle is the authored bytes and
+/// nothing else, so a verdict earned on one machine cannot travel inside it as though
+/// it were a property of the exercise. Its verdicts live in `attestations.jsonl`
+/// instead, one line per gate run, and the newest is returned here. Every check in
+/// [`require_current`] then applies unchanged - including `Runner::stale`, which is
+/// the one that notices the bundle was validated somewhere this machine is not.
 pub fn read_gate(dir: &Path) -> Result<Option<Gate>, String> {
     let path = dir.join(GATE_FILE);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(crate::bank::newest_attestation(dir))
+        }
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
     serde_json::from_str(&text)

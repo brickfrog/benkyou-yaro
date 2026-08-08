@@ -399,6 +399,46 @@ Two determinism rules, learned from other people's flaky graders: pin the seed a
 image digest, and grade floats with an explicit tolerance. A grader that flakes twice
 teaches you to distrust the tool, and then the tool dies.
 
+### The bank
+
+An exercise directory is caller-owned and usually in `/tmp`. That followed from
+treating an exercise as consumed by being solved: the graph recorded that you practised
+a concept, so the material could go. The consequence was only visible from the outside.
+The system remembered the practice and threw away the instrument — you could see that
+you scored 1.0 on `python_sets_and_order` four times, and could not see, redo, or
+audit a single one of the exercises that produced those numbers.
+
+A gate now banks what it validated, under
+`$XDG_DATA_HOME/benkyou/items/<digest>/`. The key already existed: §3 hashes the
+authored bytes so a verdict can be bound to them, and that hash is a perfectly good
+name.
+
+**A bundle is the authored files and nothing else**, so it re-hashes to the directory
+it lives in — checked on the way in, because a content-addressed store whose key does
+not describe its contents is worse than no store at all. It notably excludes
+`.gate.json`. Copying the whole directory was the obvious implementation and it swept
+that file in, which would have made one machine's verdict travel inside the exercise as
+though it were a property of it — and `attempt` trusts that sidecar, so a bundle would
+have been showable on a machine it had never run on.
+
+**Verdicts live beside the bundle, not inside it.** `attestations.jsonl` gains one line
+per gate run, and the line is the whole `Gate` record. A tidier `{ at, env, backend }`
+summary was tried first and cannot work: deciding whether a banked exercise is showable
+here runs through `Runner::stale`, which needs the runner the gate actually used, and a
+string like `"sandbox"` has already thrown that away. Old lines are never replaced —
+a bundle that passed in March and fails in August has two true records, and the pair is
+the useful one. Appended with `O_APPEND` rather than read-modify-written, so two
+concurrent gates cannot lose one another's report.
+
+Reuse re-checks rather than trusting the name. `read_gate` falls back to the newest
+attestation when there is no sidecar, and every existing refusal then applies unchanged:
+edited bytes, a stale runner, a gate that rejected. Verified by editing a banked
+`instruction.md` and by rolling back a recorded `semantics` — both refuse and name the
+fix.
+
+What is deliberately absent is any notion of *which* banked exercise to serve. That is
+a learning decision rather than a lookup, and it is not made here.
+
 ---
 
 ## 4. Cards
@@ -638,10 +678,15 @@ That also settles the confidentiality question, which is otherwise fatal. A page
 graded client-side would have to ship the grader to the client, and view-source defeats
 `hidden`. Grading in the process keeps hidden cases where they already were.
 
-The queue is the argument list. There is deliberately no goal-driven queue: nothing maps
-a concept to a directory, because this tool ships no exercises and does not name a
-library root. Inventing an index here would quietly acquire the one thing §6 declines to
-own. A goal-driven queue needs an explicit `--library` the learner names.
+The queue is the argument list: directories, or digests of banked exercises. The
+"nothing maps a concept to a directory" argument that used to sit here has expired —
+the bank records each bundle's `concept_id`, so the index exists. What is genuinely
+missing is a *selection policy*. Several exercises can serve one concept, and choosing
+between them is a learning decision, not a lookup: an exact repeat measures speed on a
+known route, a fresh one measures whether the skill transferred, and the right answer
+depends on which of those the session is for. Picking the least recently seen would be
+a policy invented at a call site, so until that decision is made deliberately the
+caller names what it wants.
 
 Two locks, with opposite policies, because the failure modes are not symmetric. An
 execution takes the workspace lock with `try_lock` and *refuses* on contention: queueing

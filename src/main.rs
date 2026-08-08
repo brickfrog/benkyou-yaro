@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use benkyou::bank;
 use benkyou::assess::{self, AssessConfig, RecordOutcome, Step};
 use benkyou::exercise::{self, GateOutcome, Task};
 use benkyou::gate::run_gate;
@@ -109,7 +110,14 @@ USAGE
       Records the result in `.gate.json` beside the exercise, which is what makes
       it showable; your own files are not touched. The record is bound to a hash
       of the exercise, so any later edit ungates it until you run this again.
-      Exits non-zero if the exercise is rejected.
+      Also copies the exercise into the bank under that hash, so it outlives the
+      directory you wrote it in. Exits non-zero if the exercise is rejected.
+
+  benkyou items [--concept ID]
+      List banked exercises: what survived a gate and can be sat down to again.
+      Each entry gives a digest, the concept, and when it last passed a gate.
+      Anywhere below that takes <exercise-dir> also takes a digest, or enough of
+      the front of one to be unambiguous.
 
   benkyou warm <exercise-dir> [--force]
       Install the packages an exercise declares in [deps] so its scripts can
@@ -312,8 +320,50 @@ fn run(args: &[String]) -> Result<String, String> {
             .as_str();
         store::goal_path(arg).map_err(|e| format!("{cmd}: {e}"))
     };
+    // An exercise argument is a path unless it is a bare digest naming a banked
+    // bundle. Resolved in one place, like `need_goal`, so no command can disagree
+    // with another about what an argument means.
+    //
+    // A path that exists wins, always. A directory genuinely called `deadbeef` has to
+    // keep working, and the bank must never shadow something the caller pointed at.
+    let need_exercise = |i: usize| -> Result<PathBuf, String> {
+        let dir = need(i, "exercise-dir")?;
+        if dir.exists() {
+            return Ok(dir);
+        }
+        let looks_like_a_digest = dir
+            .to_str()
+            .is_some_and(|s| s.len() >= 8 && s.bytes().all(|b| b.is_ascii_hexdigit()));
+        if !looks_like_a_digest {
+            // Not hex, so it was meant as a path. Hand back the path and let the
+            // command report the missing directory: telling someone who mistyped a
+            // directory name that it is not valid hex helps nobody.
+            return Ok(dir);
+        }
+        let name = dir.to_string_lossy().into_owned();
+        bank::bank_dir()
+            .and_then(|b| bank::resolve(&b, &name))
+            .map_err(|e| format!("{cmd}: {e}"))
+    };
 
     match cmd {
+        // What the bank holds. The counterpart to `goals`: that lists what you are
+        // learning, this lists the exercises that survived a gate and are still
+        // available to sit down to.
+        "items" => {
+            let bank = bank::bank_dir()?;
+            let concept = flag(args, "--concept");
+            let items: Vec<_> = bank::list(&bank)?
+                .into_iter()
+                .filter(|(_, m)| concept.as_ref().is_none_or(|c| &m.concept_id == c))
+                .map(|(digest, m)| bank::describe(&bank, &digest, &m))
+                .collect();
+            json(&serde_json::json!({
+                "dir": bank.display().to_string(),
+                "items": items,
+            }))
+        }
+
         "goals" => {
             // Create it. This is the verb that tells an agent where to write the first
             // graph, and reporting a directory that does not exist hands it an ENOENT
@@ -782,7 +832,33 @@ fn run(args: &[String]) -> Result<String, String> {
                     // record covers the authored files byte for byte, which is only
                     // possible while the tool never writes to them.
                     exercise::write_gate(&dir, &gate)?;
-                    Ok(text)
+
+                    // And into the bank, because this is the moment the exercise
+                    // became worth keeping: it has been run twice and against every
+                    // wrong answer its author named. The directory it was written to
+                    // is usually under /tmp and will not survive the week.
+                    //
+                    // Best-effort. A bank that cannot be written is worth reporting
+                    // and never worth failing a gate over - the verdict was earned,
+                    // and the sidecar beside the exercise already records it.
+                    let mut body = body;
+                    let task = exercise::load(&dir)?;
+                    // The attestation is the gate record verbatim. Summarising it
+                    // would throw away the `Runner`, which is the thing that decides
+                    // whether this verdict still applies on the machine that later
+                    // picks the bundle up.
+                    match bank::bank_dir()
+                        .and_then(|b| bank::deposit(&b, &dir, &gate.digest, &task, &gate))
+                    {
+                        Ok(path) => {
+                            body["banked"] = serde_json::json!({
+                                "digest": gate.digest,
+                                "path": path.display().to_string(),
+                            });
+                        }
+                        Err(e) => body["bank_failed"] = e.into(),
+                    }
+                    json(&body)
                 }
                 // A rejected exercise is a failure of the command, not a report:
                 // the caller must not go on to show it to a learner.
@@ -799,7 +875,7 @@ fn run(args: &[String]) -> Result<String, String> {
         // reached an index would make every later verdict depend on what a registry
         // served that afternoon.
         "warm" => {
-            let dir = need(0, "exercise-dir")?;
+            let dir = need_exercise(0)?;
             let task = exercise::load(&dir)?;
             let force = args.iter().any(|a| a == "--force");
             match benkyou::deps::warm(&task.deps, force)? {
@@ -821,7 +897,7 @@ fn run(args: &[String]) -> Result<String, String> {
         }
 
         "attempt" => {
-            let dir = need(0, "exercise-dir")?;
+            let dir = need_exercise(0)?;
             let task = exercise::load(&dir)?;
             let root = work_root(args, &dir, &task)?;
             std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -838,11 +914,13 @@ fn run(args: &[String]) -> Result<String, String> {
         }
 
         "serve" => {
-            // The queue is the argument list. There is no goal-driven queue because
-            // nothing maps a concept to a directory on disk: this tool ships no
-            // exercises and declines to name a library root (see `order.rs`), so the
-            // caller supplies paths here exactly as it does to `attempt` and `grade`.
-            let dirs: Vec<PathBuf> = pos.iter().map(|s| PathBuf::from(s.as_str())).collect();
+            // The queue is the argument list. Each entry is a directory, or the digest
+            // of a banked exercise — which is how "redo that kata" works at all, since
+            // the directory an exercise was authored in is usually under /tmp and gone
+            // by the time you want it again.
+            let dirs: Vec<PathBuf> = (0..pos.len())
+                .map(need_exercise)
+                .collect::<Result<Vec<_>, _>>()?;
             if dirs.is_empty() {
                 return Err("serve: name at least one exercise directory".into());
             }
@@ -881,7 +959,7 @@ fn run(args: &[String]) -> Result<String, String> {
         }
 
         "grade" => {
-            let dir = need(0, "exercise-dir")?;
+            let dir = need_exercise(0)?;
             let task = exercise::load(&dir)?;
             let root = work_root(args, &dir, &task)?;
             let backend = backend(args)?;

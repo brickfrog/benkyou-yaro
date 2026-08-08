@@ -71,7 +71,7 @@ permissions, over your whole filesystem. Read a generated `check/check.sh` and
 
 ```sh
 cargo build --release   # target/release/benkyou
-cargo test              # 293 tests
+cargo test              # 336 tests
 ```
 
 ## Use it from a chat agent
@@ -194,12 +194,13 @@ gating and coarse session-level spacing.
 It prints one URL and opens it. The URL holds a token for that one session.
 
 ```sh
-benkyou serve ./exercises/foo ./exercises/bar --goal ramp
+benkyou serve ./exercises/foo f84641d236fd --goal ramp
 ```
 
-The queue is the argument list, in that order. There is no queue from a goal, because
-nothing here maps a concept to a directory: this tool ships no exercises and does not
-name your exercise library. You give the paths, as you do for `attempt` and `grade`.
+The queue is the argument list, in that order: directories, or digests from the bank.
+There is still no queue built from a goal. The bank knows which concept each exercise
+belongs to, but nothing yet chooses between several exercises for the same concept,
+and picking the first would be a policy invented on the spot. You name what you want.
 
 **Your code runs in this process, and never in the tab.** Run and Submit both go
 through the same runner and the same grader the CLI uses. Put a second engine in the
@@ -241,6 +242,31 @@ A workspace is state and not data. Each one lives under
 workspace is scratch for one sitting, and you can build it again from the exercise
 directory. `attempt` and `grade` derive the same path from the task, so you cannot point
 them at different directories by accident. `--work` overrides both.
+
+A gated exercise is copied into the bank at
+`$XDG_DATA_HOME/benkyou/items/<digest>/`. The directory an exercise is authored in is
+usually under `/tmp` and does not survive the week, and the graph would then hold a
+score with nothing behind it. The bank is what lets you sit down to the same kata
+again, and what lets you read the exercise that produced an old result.
+
+A bundle holds the authored files and nothing else, so it hashes to the directory name
+it lives under. Beside it, `attestations.jsonl` gains one line per gate run: the whole
+verdict, including the runner it was earned under. Old lines are never replaced. A
+bundle that passed in March and fails in August has two true records, and the pair is
+the useful one.
+
+`benkyou items` lists the bank. Anywhere that takes an exercise directory also takes a
+digest, or enough of the front of one to be unambiguous:
+
+```sh
+benkyou items --concept pandas_groupby
+benkyou attempt f84641d236fd
+benkyou serve f84641d236fd
+```
+
+A path that exists always wins over a digest, so a directory named in hex still works.
+A banked exercise is re-checked before it is shown: edited bytes, a different runner,
+or a verdict from a machine this is not all refuse and tell you to gate it again.
 
 There is no database, no daemon, and no sync. You can delete any of it.
 

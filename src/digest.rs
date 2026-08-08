@@ -165,14 +165,14 @@ pub fn hex(bytes: &[u8]) -> String {
 /// `instruction.md` is here because an exercise whose prose changed is a different
 /// exercise even when every byte of code is the same: the grader still passes, and the
 /// learner is now answering a different question.
-const FILES: [&str; 2] = ["task.toml", "instruction.md"];
+pub const FILES: [&str; 2] = ["task.toml", "instruction.md"];
 
 /// Directories hashed in full.
 ///
 /// `solution/` is included even though the learner never sees it: the gate's first
 /// direction is a claim about that script, and a rewritten reference is a different
 /// claim.
-const DIRS: [&str; 3] = ["setup", "check", "solution"];
+pub const DIRS: [&str; 3] = ["setup", "check", "solution"];
 
 /// Hash the content of an exercise directory, byte for byte.
 ///

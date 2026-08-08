@@ -11,10 +11,12 @@
 //! in neither: the learner would get a green in the browser and a red from `grade`,
 //! and would believe whichever came first. Monaco is a view over files on disk.
 //!
-//! The queue is the argument list. This tool ships no exercises and does not name a
-//! library root (see `order.rs`), so there is nothing to scan and no way to turn a
-//! goal into a set of directories. The caller owns paths here exactly as it does in
-//! `attempt` and `grade`.
+//! The queue is the argument list: directories, or digests of banked exercises. What
+//! is still missing is a queue built from a *goal* — the bank knows which concept each
+//! bundle belongs to, but nothing yet decides which of several exercises for one
+//! concept a learner should get, and picking the first match would be a policy
+//! invented at the call site. Until that policy exists, the caller names what it
+//! wants, exactly as it does for `attempt` and `grade`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
