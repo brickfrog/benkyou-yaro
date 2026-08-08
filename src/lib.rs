@@ -6,6 +6,7 @@ pub mod anki;
 pub mod assess;
 pub mod attempt;
 pub mod browser;
+pub mod deps;
 pub mod digest;
 pub mod exercise;
 pub mod gate;

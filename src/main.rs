@@ -1,8 +1,13 @@
 //! The CLI an agent drives.
 //!
-//! This binary makes no network calls and holds no API key. It emits structured
-//! *generation orders*; the agent already in a conversation fills them with the model
-//! the user is already paying for and writes the result back. See DESIGN.md §6.
+//! This binary holds no API key and calls no model. It emits structured *generation
+//! orders*; the agent already in a conversation fills them with the model the user is
+//! already paying for and writes the result back. See DESIGN.md §6.
+//!
+//! One command reaches a network: `warm` installs an exercise's declared packages from
+//! a package index. It is separate precisely so that it is the exception - nothing on
+//! the gating or grading path can reach anything, and a verdict never depends on what
+//! an index served that afternoon.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -105,6 +110,21 @@ USAGE
       it showable; your own files are not touched. The record is bound to a hash
       of the exercise, so any later edit ungates it until you run this again.
       Exits non-zero if the exercise is rejected.
+
+  benkyou warm <exercise-dir> [--force]
+      Install the packages an exercise declares in [deps] so its scripts can
+      import them. The only command here that uses a network, and the only
+      reason it exists: runs have none, so a `pip install` at grade time fails
+      and a PEP 723 header resolves against nothing. Warming happens once, on
+      purpose, before gating; every later run binds the result read-only.
+      Sets are keyed by the package list and by the interpreter's ABI, so an
+      interpreter upgrade re-warms rather than loading wheels it cannot load.
+      Every requirement must be a registry name pinned to one exact version
+      (`pandas==3.0.5`); a bare name or a range is refused, because the cache
+      key is a digest of the list and would otherwise name changing bytes.
+      Only wheels are installed: a URL, a path, an editable, or a package that
+      has to be built would run code on your machine out of a generated file.
+      --force refetches, and repairs a set whose manifest is missing.
 
   benkyou attempt <exercise-dir> [--work <dir>]
       Materialise a workspace and sit down to the exercise. Refuses anything the
@@ -209,7 +229,8 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 /// Flags that take no value. Without this list `positional` eats the argument after
 /// a boolean flag, so `cards --push cards.json` loses the file — the flag consumes
 /// it and the command reports a missing argument for something plainly there.
-const VALUELESS: &[&str] = &["--help", "--version", "--push", "--no-open", "--unsafe-host"];
+const VALUELESS: &[&str] =
+    &["--help", "--version", "--push", "--no-open", "--unsafe-host", "--force"];
 
 fn positional(args: &[String]) -> Vec<&String> {
     let mut out = Vec::new();
@@ -759,6 +780,33 @@ fn run(args: &[String]) -> Result<String, String> {
                     println!("{text}");
                     Err("gate: exercise rejected — see outcome".into())
                 }
+            }
+        }
+
+        // The only command that uses a network, and the only one that is expected to
+        // be slow. Split out from `gate` rather than folded into it so that the
+        // networked step is something a person runs on purpose: a gate that silently
+        // reached an index would make every later verdict depend on what a registry
+        // served that afternoon.
+        "warm" => {
+            let dir = need(0, "exercise-dir")?;
+            let task = exercise::load(&dir)?;
+            let force = args.iter().any(|a| a == "--force");
+            match benkyou::deps::warm(&task.deps, force)? {
+                None => json(&serde_json::json!({
+                    "warmed": [],
+                    "note": "no [deps] declared - nothing to warm",
+                })),
+                Some(w) => json(&serde_json::json!({
+                    "warmed": w.python,
+                    "abi": w.abi,
+                    "path": w.path,
+                    "fetched": w.fetched,
+                    // The whole tree, not just what was asked for: an exact pin fixes
+                    // the names above and nothing under them, and this is the list the
+                    // gate will record beside its verdict.
+                    "resolved": w.resolved,
+                })),
             }
         }
 

@@ -183,6 +183,12 @@ pub struct Job<'a> {
     /// Wall-clock deadline. On expiry the process tree is killed and `timed_out` set.
     pub timeout_secs: u32,
     pub limits: Limits,
+    /// A warmed dependency set to bind read-only, with `PYTHONPATH` pointed at it.
+    ///
+    /// Read-only and outside `view` because it is not the caller's data and no job has
+    /// any reason to write to it: one exercise must not be able to alter what the next
+    /// one imports. See [`crate::deps`].
+    pub deps: Option<&'a Path>,
 }
 
 impl<'a> Job<'a> {
@@ -193,7 +199,13 @@ impl<'a> Job<'a> {
         script: &'a str,
         timeout_secs: u32,
     ) -> Self {
-        Self { root, view, cwd, script, timeout_secs, limits: Limits::default() }
+        Self { root, view, cwd, script, timeout_secs, limits: Limits::default(), deps: None }
+    }
+
+    /// Bind a warmed dependency set into the job.
+    pub fn with_deps(mut self, deps: Option<&'a Path>) -> Self {
+        self.deps = deps;
+        self
     }
 
     fn host_cwd(&self) -> PathBuf {
@@ -462,6 +474,15 @@ fn sandbox_command(bwrap: &Path, job: &Job, script: &str) -> Result<Command, Str
             &format!("{GUEST_ROOT}/{name}"),
         ]);
     }
+    // Read-only, and named outside `view` so no caller can hand it out writable.
+    // `PYTHONPATH` is set here rather than inherited: the ENV allowlist exists because
+    // an inherited `PYTHONPATH` makes a verdict depend on the shell that launched the
+    // tool, and this one is a property of the exercise instead - declared in
+    // `task.toml`, warmed on purpose, identical on every run.
+    if let Some(set) = job.deps {
+        cmd.args(["--ro-bind", &set.display().to_string(), crate::deps::GUEST_DEPS]);
+        cmd.args(["--setenv", "PYTHONPATH", crate::deps::GUEST_DEPS]);
+    }
     cmd.args(["--chdir", &job.guest_cwd(), "/bin/sh", "-c", script]);
     // bwrap itself inherits nothing; --clearenv governs the child.
     cmd.env_clear();
@@ -481,6 +502,12 @@ fn host_command(job: &Job, script: &str) -> Result<Command, String> {
         cmd.env(k, v);
     }
     cmd.env("HOME", &home);
+    // The host path, since there is no mount namespace to put it anywhere else. Not
+    // read-only: this backend cannot make it so, which is one more entry on the list of
+    // things it does not give you.
+    if let Some(set) = job.deps {
+        cmd.env("PYTHONPATH", set);
+    }
     Ok(cmd)
 }
 

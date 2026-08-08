@@ -472,7 +472,8 @@ the confidence they earned.
 ## 6. Shape of the tool
 
 A single Rust binary over plain JSON files, plus a skill that teaches an agent to drive
-it. It makes **no network calls and holds no API key**, and the only loopback traffic is
+it. It **holds no API key and calls no model**. Exactly one command reaches a network - `benkyou warm`, which installs declared packages from an index so that gating and
+grading never have to - and the only loopback traffic is
 to AnkiConnect.
 
 State is two files per goal: `<goal>.json` holds the graph with the learner state
@@ -629,28 +630,74 @@ mastery, and §5 already has its four numbers.
 There is no keystroke replay. The events are the ones with a meaning a person can read
 six months later; a keystroke stream is a recording of typing, not of learning.
 
-What this costs *is* capability, and the bill came due at the sandbox. An exercise can
-no longer declare its own dependencies. There is no network, so `pip install` fails and
-a PEP 723 header under `uv run` buys nothing — `uv` itself runs fine; resolution is what
-dies. A venv can still be *created*; it is simply empty, and nothing can be installed
-into it. A kata that needs pandas needs pandas installed on the machine, and the gate
-rejects the exercise when it is missing rather than letting it grade something else.
-That is the intended failure: watering an exercise down to whatever happens to be
-installed records fluency the learner did not earn.
+What this cost, at the sandbox, was per-exercise dependencies. There is no network, so
+`pip install` fails and a PEP 723 header under `uv run` buys nothing — `uv` itself runs
+fine; resolution is what dies. A venv can still be *created*; it is simply empty, and
+nothing can be installed into it.
 
-There is a recovery path, measured but not built: a warm `uv` cache bound with
-`--overlay-src … --tmp-overlay` resolves offline, keeps an uncached package failing, and
-discards the run's writes so one exercise cannot poison the cache for the next. It is a
-feature — a cache to populate, an invalidation story, a new way for two machines to
-disagree — and it is not in v1.
+### Declared dependencies
 
-What the sandbox does **not** buy is **hermeticity**. `/usr` is the host's, read-only,
-so the interpreter and every installed package still come from the machine, and a
-grader's result is only as reproducible as that machine. What it does buy is
-*isolation*: no network, no host filesystem, a scrubbed `HOME`, a private tmpfs, and a
-fresh workspace per run, so nothing a run leaves behind reaches the next one or the
-user. Those are different properties, and only the second is a property a namespace can
-supply.
+The recovery is not to give runs a network. It is to move the one step that needs one
+out of the grading path entirely, into a command a person runs on purpose:
+
+```toml
+[deps]
+python = ["pandas==3.0.5"]
+```
+
+`benkyou warm` installs that list on the host, with the network, into
+`$XDG_CACHE_HOME/benkyou/sets/<abi>/<digest>`. Every later run binds the directory
+read-only and sets `PYTHONPATH` to it. Nothing resolves at grade time, nothing writes to
+the set, and no generated script ever reaches an index.
+
+Five decisions carry the design, and each was a wrong turn first:
+
+**`uv pip install --target`, not a venv and not a cache overlay.** The first attempt
+bound a warm `uv` cache with `--overlay-src … --tmp-overlay` and ran `uv run --offline`
+inside. It works — measured — but it keeps a resolver in the grading path and needs the
+cache writable. A `--target` directory is a plain relocatable tree of packages, so the
+sandbox needs one read-only bind and an env var. A venv is the wrong shape for the same
+reason it looks right: it records absolute paths in `pyvenv.cfg` and in every console
+script, so one built at a cache path and bound elsewhere is subtly broken.
+
+**Keyed by the interpreter's ABI, not just the packages.** `uv` will install a
+`cpython-313` wheel for a sandbox running 3.14, and the failure is a
+`ModuleNotFoundError` four frames inside numpy that names nothing relevant. Warming pins
+`--python` to the interpreter the sandbox mounts, and `SOABI` is part of the set's path,
+so an interpreter upgrade misses the cache and says so.
+
+**Exact pins, enforced.** A set is keyed by its requirement list. `pandas` would name one
+directory on Monday and different bytes in a month: a stable key over changing content,
+which is precisely what the rest of this tool refuses to do with a digest. `==` is
+required and a range is rejected — including `==1.0,!=1.0.1`, since one exact comparator
+among several still admits whatever the index decides `1.0` means today.
+
+**Registry names only, and only wheels.** Warming runs on the user's machine with the
+user's rights, and its argument list comes out of a *generated* file. `git+https://…`
+clones and builds, `./thing` and `-e .` build from a path, a leading `-` is a flag rather
+than a package and `--index-url` alone redirects the whole install. A small PEP 508
+allowlist admits a name, optional extras and one exact version; `--only-binary :all:`
+covers the transitive tree, because a plain registry name can still resolve to an sdist
+whose `setup.py` would run here.
+
+**The manifest is the set's identity.** A pin fixes the names the author wrote and
+nothing below them, so `warm` records every `.dist-info` it installed and the gate keeps
+that list beside its verdict. A set whose manifest is missing or unparseable is refused
+rather than read as empty — the alternative is a verdict claiming to name a tree nobody
+can identify. A later change to the tree warns, like `Env` drift and for the same reason:
+it describes the environment a verdict was earned in, not the exercise.
+
+### What isolation still does not buy
+
+**Hermeticity.** `/usr` is the host's, read-only, so the interpreter and every
+system-installed package still come from the machine, and a grader's result is only as
+reproducible as that machine. Declared dependencies narrow this — the packages an
+exercise names are pinned and recorded — but they sit on top of a host interpreter.
+
+What isolation does buy is *isolation*: no network, no host filesystem, a scrubbed
+`HOME`, a private tmpfs, and a fresh workspace per run, so nothing a run leaves behind
+reaches the next one or the user. Those are different properties, and only the second is
+something a namespace can supply.
 
 If hermeticity is wanted later, the answer is still an image behind the same `Backend`
 interface, chosen per task — not more flags on the fence.

@@ -151,6 +151,10 @@ pub fn run_once(
     apply: Apply,
     backend: &Backend,
 ) -> Result<Run, String> {
+    // Resolved once, before anything is copied: a missing set is the author's problem
+    // to fix and there is no point building a workspace to discover it.
+    let deps = crate::deps::require(&task.deps)?;
+    let deps = deps.as_deref();
     let work = root.join(WORK);
     let check = root.join(CHECK);
     let out = root.join(OUT);
@@ -186,7 +190,7 @@ pub fn run_once(
                 WORK,
                 "sh ../solution/solve.sh",
                 task.limits.learner_secs,
-            ))?;
+            ).with_deps(deps))?;
             if !applied.succeeded() {
                 return Ok(Run {
                     root: root.to_path_buf(),
@@ -212,7 +216,7 @@ pub fn run_once(
         "",
         &task.verify.cmd,
         task.limits.check_secs,
-    ))?;
+    ).with_deps(deps))?;
 
     let reward_path = out.join(&task.verify.reward);
     let reward_text = fs::read_to_string(&reward_path).ok();
@@ -281,7 +285,11 @@ impl GateReport {
 fn check_run_cmd(task: &Task, solution_root: &Path, backend: &Backend) -> Option<String> {
     let cmd = task.workspace.run_cmd.as_deref()?;
     let secs = task.limits.learner_secs;
-    let job = Job::new(solution_root, &[(WORK, Access::Write)], WORK, cmd, secs);
+    // An unwarmed set makes this advisory unrunnable, not the exercise unsound: the
+    // caller already refused before getting here, so this only ever sees `Ok`.
+    let deps = crate::deps::require(&task.deps).ok().flatten();
+    let job = Job::new(solution_root, &[(WORK, Access::Write)], WORK, cmd, secs)
+        .with_deps(deps.as_deref());
     match backend.run(&job) {
         Ok(o) if o.succeeded() => None,
         Ok(o) if o.timed_out => Some(format!("run_cmd timed out after {secs}s")),
@@ -319,6 +327,14 @@ pub fn run_gate(
     // read from the copy that will execute them.
     let before = crate::digest::exercise_digest(&frozen)?;
     let task = exercise::load(&frozen)?;
+
+    // What the declared packages actually resolved to, recorded beside the verdict.
+    // An exact pin fixes what the author named; this is the only record of the tree
+    // underneath it, and `run_once` has already refused an unwarmed set by here.
+    let resolved_deps = match crate::deps::require(&task.deps)? {
+        Some(set) => crate::deps::resolved(&set)?,
+        None => Vec::new(),
+    };
 
     let solution_root = scratch.join("gate-solution");
     let empty_root = scratch.join("gate-empty");
@@ -367,6 +383,7 @@ pub fn run_gate(
             at,
             &before,
             backend,
+            &resolved_deps,
         )
     } else {
         exercise::GateOutcome::Rejected(exercise::GateFailure::ContentChangedDuringGate {

@@ -63,6 +63,7 @@ fn exercise_dir(name: &str, gated: bool, hidden: bool) -> PathBuf {
                 known_bad_caught: vec!["trap".into()],
                 runner: exercise::Runner::of(&sandbox()),
                 env: exercise::Env::current(),
+                deps: vec![],
             },
         )
         .expect("write gate");

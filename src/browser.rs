@@ -299,13 +299,17 @@ impl App {
             .run_cmd
             .as_deref()
             .ok_or("this exercise declares no [workspace] run_cmd")?;
-        let outcome = self.backend.run(&Job::new(
-            &item.root,
-            &[(WORK, Access::Write)],
-            WORK,
-            cmd,
-            item.task.limits.learner_secs,
-        ))?;
+        let deps = crate::deps::require(&item.task.deps)?;
+        let outcome = self.backend.run(
+            &Job::new(
+                &item.root,
+                &[(WORK, Access::Write)],
+                WORK,
+                cmd,
+                item.task.limits.learner_secs,
+            )
+            .with_deps(deps.as_deref()),
+        )?;
 
         let ms = (outcome.elapsed_secs * 1000.0) as u64;
         self.log(i, Event::Run {
@@ -580,6 +584,7 @@ mod tests {
             known_bad_caught: vec!["trap".into()],
             runner: exercise::Runner::of(&Backend::select(false).expect("a sandbox")),
             env: exercise::Env::current(),
+            deps: vec![],
         };
 
         // (name, record to write, the phrase the refusal must carry)
@@ -646,6 +651,7 @@ mod tests {
                 known_bad_caught: vec!["trap".into()],
                 runner: exercise::Runner::of(&backend),
                 env: exercise::Env::current(),
+                deps: vec![],
             },
         )
         .unwrap();

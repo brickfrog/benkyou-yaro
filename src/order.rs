@@ -262,6 +262,17 @@ fn exercise_order(graph: &Graph, id: &str) -> (Value, Value) {
          because everything else you write here agrees with your reading of it."
             .to_string(),
     ];
+    rules.push(
+        "deps: leave it out unless a script imports something the machine does not \
+         already have. If it does, pin the version exactly - `pandas==3.0.5`, never \
+         `pandas` or a range - and run `benkyou warm` before gating. Only registry \
+         names with an exact version are accepted, and only packages that ship a \
+         pre-built wheel: a URL, a path, an editable install, or anything needing a \
+         build is refused, because warming runs on the user's own machine from this \
+         file. Never rewrite an exercise to avoid a dependency it genuinely needs - a \
+         pandas concept graded on hand-rolled loops records fluency nobody earned."
+            .to_string(),
+    );
     if is_sql_ish(graph, id) {
         rules.push(
             "Portable SQL in the reference: CASE WHEN, not FILTER (WHERE ...), which SQL \
@@ -319,6 +330,11 @@ fn exercise_order(graph: &Graph, id: &str) -> (Value, Value) {
                 "must_pass": ["correctness"],
                 "hidden": true,
             },
+            // Empty by default, and omitted from the emitted TOML when empty, so an
+            // exercise needing nothing says nothing and a literal copy of this template
+            // is correct. Present at all because a package the machine lacks is
+            // otherwise discovered as a broken grader three steps later.
+            "deps": { "python": [] },
             // At least one is required and the gate rejects the exercise without it.
             // Named here rather than left to the rules text because an agent fills in
             // the shape it is given: an absent key is a key that does not get written,
@@ -333,7 +349,8 @@ fn exercise_order(graph: &Graph, id: &str) -> (Value, Value) {
         "rules": rules,
     });
     let submit = json!(
-        "benkyou gate <exercise-dir> --scratch /tmp/<name>   # must print Validated"
+        "benkyou warm <exercise-dir>   # only if you filled in [deps]; a no-op otherwise\n\
+         benkyou gate <exercise-dir> --scratch /tmp/<name>   # must print Validated"
     );
     (write, submit)
 }

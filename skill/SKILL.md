@@ -6,7 +6,7 @@ description: Drive the benkyou CLI so a learner can learn a new domain quickly �
 # benkyou
 
 A Rust binary over plain JSON files. **It holds the state and names the work. You write
-the content.** It makes no network calls and holds no API key — you are already in a
+the content.** It holds no API key and calls no model — you are already in a
 conversation with a model, so generation happens here, in the conversation, and the
 results are written back through the CLI.
 
@@ -331,19 +331,42 @@ Other rules that cost real debugging:
   both use `DIR/work`; pointing either at the workspace itself gives
   `<dir>/work: no workspace here yet`. The run directory is cleaned up afterwards, so
   `out/reward.json` is not left around to inspect.
-- **Python graders call bare `python3` and use what the machine has installed.** `uv`
-  itself runs fine in the sandbox; what fails is resolution. A PEP 723 dependency
-  header sends `uv` to the network, the sandbox has none, and `--offline` only reads a
-  cache — of which there is none mounted. So the header buys nothing as shipped.
-  `/usr` is mounted read-only, so system site-packages are available and a virtualenv
-  is not.
+- **Declare what you import; the machine may not have it.** `/usr` is mounted read-only,
+  so anything installed system-wide is already importable and needs no declaration. For
+  anything else, name it in `task.toml` with an exact pin:
 
-  This is a real cost of isolation and it is worth stating plainly: dependencies are no
-  longer declarable per exercise. If a kata needs pandas, pandas has to be installed on
-  the machine, and the gate will tell you it is not by rejecting the exercise. Never
-  water a kata down to what happens to be installed instead — a `pandas_groupby` node
-  graded on hand-rolled `collections` code records fluency the learner did not earn.
-  Install the library, or write a different exercise.
+  ```toml
+  [deps]
+  python = ["pandas==3.0.5"]
+  ```
+
+  Then run `benkyou warm <exercise-dir>` **once**, before gating. That is the only
+  command here that reaches a network. It installs the packages into a cache keyed by the
+  list and by the interpreter's ABI; every later run binds that directory read-only with
+  `PYTHONPATH` pointed at it, so graders call bare `python3` and the import works with no
+  network and nothing to resolve.
+
+  Rules the tool enforces, each because the alternative is worse:
+
+  - **Exact pins only.** `pandas` names one cache directory today and different bytes next
+    month — a stable key over changing content, which is the one thing a digest must not
+    do. `==` is required; a range or a bare name is refused.
+  - **Registry names only, and only wheels.** No URL, path, VCS reference or `-e`. Warming
+    runs on *your* machine with *your* rights, from a file a model generated, so a
+    `git+https://…` or an sdist build would be arbitrary code execution by design.
+  - **Not gated until warmed.** `gate`, `attempt`, `grade` and `serve` refuse an exercise
+    whose set is missing, and say which packages and where. A missing package would
+    otherwise surface as `CheckBroken` and send you to debug a grader that is fine.
+
+  A pin fixes what you named and not the tree underneath it, so the gate records
+  everything that actually resolved — transitive packages included — and warns if that
+  moves later. Never water a kata down to what happens to be installed: a
+  `pandas_groupby` node graded on hand-rolled `collections` code records fluency the
+  learner did not earn. Declare the library, or write a different exercise.
+
+  `uv run` inside an exercise still buys nothing. `uv` itself works, but a PEP 723 header
+  sends it to the network, there is none, and `--offline` reads a cache it is not given.
+  `[deps]` is the supported route.
 - **The verdict is the last line of output, not the exit code.** An interpreter exits 1
   for an import error, a syntax error and a wrong answer alike, and only the last of
   those is the learner's. Print `VERDICT pass <detail>` or `VERDICT fail <detail>` as
@@ -363,11 +386,12 @@ Other rules that cost real debugging:
   A `setup/` that downloads a dataset, a grader that calls an API, a `pip install` at
   check time — all fail, and they fail at gate time rather than on the learner. Ship
   the data in `setup/` or generate it in the script.
-- **You get the machine's interpreter and its installed packages, nothing else.** `/usr`
-  is visible read-only; a virtualenv, `~/.local/lib`, and anything under a home
-  directory are not. A grader that needs a package the machine does not have is an
-  exercise that cannot be gated. A PEP 723 header with `uv run` will not save you here,
-  because `uv` would have to reach the network to resolve.
+- **You get the machine's interpreter, its installed packages, and whatever you
+  declared.** `/usr` is visible read-only; a virtualenv, `~/.local/lib`, and anything
+  under a home directory are not. A grader needing a package the machine lacks is an
+  exercise that cannot be gated *until* it names the package in `[deps]` and somebody
+  runs `benkyou warm`. A PEP 723 header with `uv run` will not save you: `uv` would have
+  to reach the network to resolve, and there is none.
 - **Nothing outside the exercise exists.** No home directory, no absolute paths into
   the user's filesystem, no writing next to the exercise directory. Work relative to
   `work/`, `check/` and `out/`, and put scratch files in `/tmp`, which is a private

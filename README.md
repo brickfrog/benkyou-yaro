@@ -36,12 +36,30 @@ no graph editor, no visualiser, and no knowledge tracing.
 - Rust (2021), and a Unix system with `/bin/sh`
 - `bubblewrap` (`bwrap`), for the sandbox. Every command that runs a script needs it.
 - Anki with AnkiConnect, for `cards --push` only
+- `uv`, for `benkyou warm` only
 - The programs that your own exercises call
 
 A grader is a shell script that you write. It runs with no network, so it can use only
-what the machine already has. System Python packages are visible. A virtualenv is not.
-An exercise that needs pandas needs pandas installed on the machine, and the gate
-rejects the exercise when it is missing.
+what is there before it starts. System Python packages are visible. A virtualenv is not.
+
+If an exercise needs a package the machine does not have, name it in `task.toml` with an
+exact version:
+
+```toml
+[deps]
+python = ["pandas==3.0.5"]
+```
+
+Then run `benkyou warm <exercise-dir>` once. That installs the packages and is the only
+command here that uses a network. Every later run reads them from a read-only copy, so
+grading still runs with no network at all. `gate`, `attempt`, `grade` and `serve` refuse
+an exercise whose packages are not warmed yet, and tell you which ones.
+
+Only names with an exact version are accepted, and only pre-built wheels. A bare name
+or a version range is refused, so the same declaration always means the same packages.
+A URL, a file path or a
+package that must be built are all refused, because warming runs on your machine with
+your own rights and the list comes from a generated file.
 
 `gate`, `attempt`, `grade` and `serve` run generated scripts in a sandbox. There is no
 network, no access to your files, and no access to your study state. The default needs
@@ -99,7 +117,7 @@ binary can drive the loop.
 
 ## How the loop runs
 
-The binary makes no network call and holds no API key. It holds the state and prints
+The binary holds no API key and calls no model. One command, `benkyou warm`, reaches a package index to install an exercise's declared dependencies; nothing on the gating or grading path reaches anything. It holds the state and prints
 structured work orders. Your agent writes the content with the model that you already
 pay for. The agent then writes the result back.
 

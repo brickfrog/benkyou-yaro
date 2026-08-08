@@ -236,6 +236,15 @@ pub struct Gate {
     /// How it was executed. Without this the verdict outlives its *conditions*.
     pub runner: Runner,
     pub env: Env,
+    /// What the warmed dependency set resolved to when the gate ran, transitive
+    /// dependencies included.
+    ///
+    /// An exact pin in `task.toml` fixes the packages the author named and nothing
+    /// below them, so this is the only place the whole tree is written down. Compared
+    /// like `Env`: a change warns rather than refuses, because it describes the
+    /// environment a verdict was earned in and not the exercise itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deps: Vec<String>,
     /// Ids of the named wrong answers this grader actually rejected.
     ///
     /// A list rather than a count so a reader can see *which* traps sprang, and so
@@ -321,6 +330,30 @@ pub struct KnownBad {
     pub files: BTreeMap<String, String>,
 }
 
+/// Packages an exercise needs that the machine may not have.
+///
+/// Empty for most exercises: the sandbox exposes the host's `/usr`, so anything
+/// installed system-wide is already importable and needs no declaration. This is for
+/// the case that isolation otherwise makes impossible - a kata about pandas on a
+/// machine without pandas.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Deps {
+    /// Requirement strings, in the small subset `crate::deps::check_spec` admits: a
+    /// name, optional extras, and exactly one exact `==` version. A bare name or a
+    /// range is refused, because a set is cached under a digest of this list and an
+    /// unpinned entry makes that key name different bytes over time. No URLs, paths or
+    /// flags either - warming runs on the host with a network, and those forms execute
+    /// code there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub python: Vec<String>,
+}
+
+impl Deps {
+    pub fn is_empty(&self) -> bool {
+        self.python.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub schema_version: String,
@@ -333,6 +366,13 @@ pub struct Task {
     /// Kept last because TOML tables must follow every plain value in the struct.
     #[serde(default, skip_serializing_if = "Workspace::is_empty")]
     pub workspace: Workspace,
+    /// Third-party packages the exercise's own scripts need.
+    ///
+    /// Declared rather than discovered from a PEP 723 header, because `benkyou warm`
+    /// has to learn the list without executing anything: importing a generated script
+    /// to find its imports would put that script on a network. See [`crate::deps`].
+    #[serde(default, skip_serializing_if = "Deps::is_empty")]
+    pub deps: Deps,
     /// Wrong answers that must fail. At least one is required; see [`KnownBad`].
     ///
     /// After `workspace` because an array of tables has to follow every other table
@@ -434,10 +474,39 @@ pub fn gate_warnings(dir: &Path, backend: &crate::run::Backend) -> Vec<String> {
         Ok(Some(gate)) => {
             let mut out = gate.env.drift(&Env::current());
             out.extend(gate.runner.drift(&Runner::of(backend)));
+            out.extend(deps_drift(dir, &gate));
             out
         }
         _ => Vec::new(),
     }
+}
+
+/// Whether the dependency tree under the exercise's pins has moved since it was gated.
+///
+/// A warning and not a refusal, for the same reason `Env` warns: it describes the
+/// environment a verdict was earned in, not the exercise. Every authored byte is still
+/// covered by the digest and unchanged - what moved is a wheel below the version the
+/// author pinned. Silence would be wrong though: a grader that passed against one numpy
+/// and fails against the next looks like a broken exercise, and this is the one line
+/// that says otherwise.
+fn deps_drift(dir: &Path, gate: &Gate) -> Vec<String> {
+    let Ok(task) = load(dir) else { return Vec::new() };
+    // A set that cannot be identified is reported by `require` on the run path, where it
+    // is an error. Here it would be noise on top of that.
+    let Ok(Some(set)) = crate::deps::require(&task.deps) else { return Vec::new() };
+    let Ok(now) = crate::deps::resolved(&set) else { return Vec::new() };
+    if gate.deps == now {
+        return Vec::new();
+    }
+    let gone: Vec<&str> =
+        gate.deps.iter().filter(|d| !now.contains(d)).map(String::as_str).collect();
+    let added: Vec<&str> =
+        now.iter().filter(|d| !gate.deps.contains(d)).map(String::as_str).collect();
+    vec![format!(
+        "dependency set changed since gating: was [{}], now [{}]",
+        gone.join(", "),
+        added.join(", ")
+    )]
 }
 
 /// What the grader wrote. Dimension name to score in `0.0..=1.0`, plus learner-facing
@@ -598,6 +667,7 @@ pub fn gate_outcome(
     at: &str,
     digest: &str,
     backend: &crate::run::Backend,
+    deps: &[String],
 ) -> GateOutcome {
     if !solution.is_pass() {
         return GateOutcome::Rejected(GateFailure::SolutionFailed(solution.clone()));
@@ -631,6 +701,7 @@ pub fn gate_outcome(
         digest: digest.to_string(),
         runner: Runner::of(backend),
         env: Env::current(),
+        deps: deps.to_vec(),
     })
 }
 
@@ -691,6 +762,7 @@ mod tests {
             "t",
             "d",
             &crate::run::Backend::UnsafeHost,
+            &[],
         );
         match outcome {
             GateOutcome::Rejected(GateFailure::KnownBadPassed { id, .. }) => {
@@ -714,6 +786,7 @@ mod tests {
             "t",
             "d",
             &crate::run::Backend::UnsafeHost,
+            &[],
         );
         assert!(matches!(
             outcome,
@@ -732,6 +805,7 @@ mod tests {
             "t",
             "d",
             &crate::run::Backend::UnsafeHost,
+            &[],
         );
         assert!(matches!(
             outcome,
@@ -752,6 +826,7 @@ mod tests {
             known_bad_caught: Vec::new(),
             runner: Runner::of(&crate::run::Backend::UnsafeHost),
             env: Env::current(),
+            deps: vec![],
         };
         assert!(old.predates_known_bad());
         assert!(!old.holds());
@@ -836,19 +911,19 @@ mod tests {
 
         // Both hold.
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &fail, &caught(), "t", "d", &crate::run::Backend::UnsafeHost),
+            gate_outcome(&Verdict::Pass, &fail, &caught(), "t", "d", &crate::run::Backend::UnsafeHost, &[]),
             GateOutcome::Validated(_)
         ));
 
         // Unsolvable as written.
         assert!(matches!(
-            gate_outcome(&fail, &fail, &caught(), "t", "d", &crate::run::Backend::UnsafeHost),
+            gate_outcome(&fail, &fail, &caught(), "t", "d", &crate::run::Backend::UnsafeHost, &[]),
             GateOutcome::Rejected(GateFailure::SolutionFailed(_))
         ));
 
         // Vacuous: the empty workspace already passes.
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &Verdict::Pass, &caught(), "t", "d", &crate::run::Backend::UnsafeHost),
+            gate_outcome(&Verdict::Pass, &Verdict::Pass, &caught(), "t", "d", &crate::run::Backend::UnsafeHost, &[]),
             GateOutcome::Rejected(GateFailure::ChecksVacuous(_))
         ));
     }
@@ -859,7 +934,7 @@ mod tests {
     fn a_broken_grader_on_the_empty_run_does_not_validate() {
         let broken = Verdict::CheckBroken("boom".into());
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &broken, &caught(), "t", "d", &crate::run::Backend::UnsafeHost),
+            gate_outcome(&Verdict::Pass, &broken, &caught(), "t", "d", &crate::run::Backend::UnsafeHost, &[]),
             GateOutcome::Rejected(GateFailure::ChecksVacuous(_))
         ));
     }
@@ -873,6 +948,7 @@ mod tests {
             known_bad_caught: vec!["trap".into()],
             runner: Runner::of(&crate::run::Backend::UnsafeHost),
             env: Env::current(),
+            deps: vec![],
         }
     }
 

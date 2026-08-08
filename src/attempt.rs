@@ -34,9 +34,11 @@ pub struct Attempt {
 /// grading the check scripts are staged beside `work/` and the verify command runs
 /// with that directory as its cwd, so code the learner wrote can read `check/` while
 /// it executes — and the Python graders import the learner's module into the grading
-/// process itself, which no directory layout can undo. Sealing that needs a sandbox,
-/// which this tool deliberately does not have. Confidentiality here is a convenience
-/// against stumbling onto the answer, never a defence against going to look for it.
+/// process itself, which no directory layout can undo. The sandbox bounds what that
+/// code can reach of the *machine*; it does not pretend to hide `check/` from a job
+/// that must be able to run it. Confidentiality here is a convenience against
+/// stumbling onto the answer, never a defence against going to look for it — which is
+/// why `verify.hidden` exists and grades in a directory the learner never sees.
 ///
 /// Refuses an exercise the gate has not validated, and one edited since it was.
 /// That rule is the whole difference between an exercise and a model's guess at
@@ -104,6 +106,7 @@ fn grade_in(
     root: &Path,
     backend: &Backend,
 ) -> Result<Attempt, String> {
+    let deps = crate::deps::require(&task.deps)?;
     let check = root.join(CHECK);
     let out = root.join(OUT);
     let _ = fs::remove_dir_all(&check);
@@ -117,7 +120,7 @@ fn grade_in(
         "",
         &task.verify.cmd,
         task.limits.check_secs,
-    ))?;
+    ).with_deps(deps.as_deref()))?;
     let reward = fs::read_to_string(out.join(&task.verify.reward)).ok();
     let verdict = exercise::grade(
         &task.verify,

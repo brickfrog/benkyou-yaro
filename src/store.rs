@@ -31,6 +31,15 @@ pub fn state_dir() -> Result<PathBuf, String> {
     xdg_dir("XDG_STATE_HOME", ".local/state")
 }
 
+/// Warmed dependency sets: `$XDG_CACHE_HOME/benkyou`, else `~/.cache/benkyou`.
+///
+/// Cache, not state or data: every byte here was downloaded from an index and can be
+/// downloaded again by `benkyou warm`. Deleting it costs a re-warm and nothing else,
+/// which is exactly the contract the XDG cache directory carries.
+pub fn cache_dir() -> Result<PathBuf, String> {
+    xdg_dir("XDG_CACHE_HOME", ".cache")
+}
+
 /// The env read. Kept to one line of impurity so [`xdg_base`] can be tested without
 /// mutating process-global environment from a threaded test harness.
 fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf, String> {
