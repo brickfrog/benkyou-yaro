@@ -629,21 +629,31 @@ mastery, and §5 already has its four numbers.
 There is no keystroke replay. The events are the ones with a meaning a person can read
 six months later; a keystroke stream is a recording of typing, not of learning.
 
-What this costs is *not* capability. An exercise that wants a dependency can build a
-venv in its own run directory and install into it — verified: `python3 -m venv .venv &&
-.venv/bin/pip install six` succeeds in the runner. The nsjail configuration it replaced
-could not do that at all, having no network namespace and a read-only `/usr`. A fence is
-not an environment provider.
+What this costs *is* capability, and the bill came due at the sandbox. An exercise can
+no longer declare its own dependencies. There is no network, so `pip install` fails and
+a PEP 723 header under `uv run` buys nothing — `uv` itself runs fine; resolution is what
+dies. A venv can still be *created*; it is simply empty, and nothing can be installed
+into it. A kata that needs pandas needs pandas installed on the machine, and the gate
+rejects the exercise when it is missing rather than letting it grade something else.
+That is the intended failure: watering an exercise down to whatever happens to be
+installed records fluency the learner did not earn.
 
-What it costs is **hermeticity**. The run sees the host's interpreter, the host's
-network, and whatever the last run left behind. So a grader's result is only as
-reproducible as the machine it ran on, and a kata that damages state outside its run
-directory will succeed in doing so. Both are properties of an *image plus a throwaway
-filesystem* — a container or a microVM. Namespace fencing was never going to supply
-them, which is the real reason its removal costs less than it looks like it should.
+There is a recovery path, measured but not built: a warm `uv` cache bound with
+`--overlay-src … --tmp-overlay` resolves offline, keeps an uncached package failing, and
+discards the run's writes so one exercise cannot poison the cache for the next. It is a
+feature — a cache to populate, an invalidation story, a new way for two machines to
+disagree — and it is not in v1.
 
-If hermeticity is wanted later, the answer is a container backend behind the same
-`Runner` interface, chosen per task, not a fence bolted onto the host filesystem.
+What the sandbox does **not** buy is **hermeticity**. `/usr` is the host's, read-only,
+so the interpreter and every installed package still come from the machine, and a
+grader's result is only as reproducible as that machine. What it does buy is
+*isolation*: no network, no host filesystem, a scrubbed `HOME`, a private tmpfs, and a
+fresh workspace per run, so nothing a run leaves behind reaches the next one or the
+user. Those are different properties, and only the second is a property a namespace can
+supply.
+
+If hermeticity is wanted later, the answer is still an image behind the same `Backend`
+interface, chosen per task — not more flags on the fence.
 
 ---
 

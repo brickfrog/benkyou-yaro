@@ -331,10 +331,12 @@ Other rules that cost real debugging:
   both use `DIR/work`; pointing either at the workspace itself gives
   `<dir>/work: no workspace here yet`. The run directory is cleaned up afterwards, so
   `out/reward.json` is not left around to inspect.
-- **Python graders call bare `python3` and use what the machine has installed.** The
-  sandbox has no network, so `uv run` cannot resolve and a PEP 723 header buys nothing:
-  `uv` fails on DNS before it reads your dependency list. `/usr` is mounted read-only,
-  so system site-packages are available and a virtualenv is not.
+- **Python graders call bare `python3` and use what the machine has installed.** `uv`
+  itself runs fine in the sandbox; what fails is resolution. A PEP 723 dependency
+  header sends `uv` to the network, the sandbox has none, and `--offline` only reads a
+  cache — of which there is none mounted. So the header buys nothing as shipped.
+  `/usr` is mounted read-only, so system site-packages are available and a virtualenv
+  is not.
 
   This is a real cost of isolation and it is worth stating plainly: dependencies are no
   longer declarable per exercise. If a kata needs pandas, pandas has to be installed on
