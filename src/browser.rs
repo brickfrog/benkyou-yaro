@@ -357,7 +357,7 @@ impl App {
             practice = json!({
                 "node": c.node,
                 "score": c.score,
-                "confidence": c.confidence,
+                "mastery": c.mastery,
                 "also_credited": c.also_credited,
             });
         }

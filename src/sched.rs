@@ -14,16 +14,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::graph::{Graph, Node, NodeId};
 
-/// Everything remembered about practice on one concept. Four numbers.
+/// Everything remembered about practice on one concept.
+///
+/// `mastery` is *evidence*, and evidence does not expire. What elapsed time changes
+/// is whether a fresh check is owed, which is [`due_in`] — a separate question with a
+/// separate answer. Collapsing the two was the original design error here: one number
+/// stood for historical mastery, current retention, prerequisite readiness, ordering
+/// priority and retirement at once, and decaying it to serve the second meaning
+/// silently destroyed the first. A learner who proved something last month has still
+/// proved it; they may simply owe a re-check.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Fluency {
     /// Best graded score ever achieved, 0.0..=1.0.
     pub best_score: f32,
     /// Whole days since the epoch, or `None` if never practised.
     pub last_practiced: Option<i64>,
+    /// Direct attempts only. Credit arriving over an `encompasses` edge does not
+    /// increment this, which is what makes it usable as "has this ever been proven".
     pub attempts: u32,
-    /// Current confidence, 0.0..=1.0, before decay is applied.
-    pub confidence: f32,
+    /// Accumulated evidence of mastery, `0.0..=cfg.mastery_ceiling`. Never reduced by
+    /// elapsed time; reduced only by a direct attempt that goes badly.
+    #[serde(alias = "confidence")]
+    pub mastery: f32,
 }
 
 impl Default for Fluency {
@@ -32,32 +44,36 @@ impl Default for Fluency {
             best_score: 0.0,
             last_practiced: None,
             attempts: 0,
-            confidence: 0.0,
+            mastery: 0.0,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SchedConfig {
-    /// Confidence at or above which a concept counts as mastered, and so stops
-    /// blocking its dependents.
+    /// Mastery at or above which a concept counts as proven, and so stops blocking
+    /// its dependents.
     pub target: f32,
-    /// Days for decayed confidence to fall to half. Session-level spacing, not
-    /// item-level intervals.
-    pub half_life_days: f32,
-    /// Confidence at or above which a concept is retired and stops being scheduled.
-    /// Individual learning curves are exponential with a hard asymptote, so
-    /// reviewing forever buys nothing.
-    pub retire_at: f32,
+    /// Days a concept at exactly `target` stays settled before a re-check is owed.
+    /// Scaled by evidence in [`due_in`], so more mastery buys a longer interval.
+    /// Session-level spacing, not item-level intervals.
+    #[serde(alias = "half_life_days")]
+    pub review_after_days: f32,
+    /// Ceiling on accumulated mastery. Reaching it does not retire a concept - it
+    /// buys the longest review interval, which is what an asymptote on the
+    /// acquisition curve actually licenses. Heathcote et al. found individual
+    /// learning curves fit exponentials with a hard asymptote; that is a claim about
+    /// how fast performance stops improving, not a promise that it never decays, so
+    /// it cannot justify never checking again.
+    #[serde(alias = "retire_at")]
+    pub mastery_ceiling: f32,
     /// How many items one session holds.
     pub session_size: usize,
-    /// Fraction of a direct attempt's confidence gain that flows to a concept
-    /// reached through an `encompasses` edge.
+    /// Fraction of a direct attempt's gain that flows to a concept reached through
+    /// an `encompasses` edge.
     pub encompass_credit: f32,
-    /// A direct attempt scoring below this is a lapse: it discards the confidence
-    /// accumulated so far rather than adding nothing to it. Without a lapse rule a
-    /// retired concept can never be demoted, so failing its exercise would retire
-    /// it forever — the opposite of what failing means.
+    /// Score below which a direct attempt costs previously accumulated mastery.
+    /// The penalty is proportional rather than total - see [`apply_credit`].
     pub lapse_at: f32,
 }
 
@@ -65,8 +81,8 @@ impl Default for SchedConfig {
     fn default() -> Self {
         Self {
             target: 1.0,
-            half_life_days: 21.0,
-            retire_at: 1.5,
+            review_after_days: 21.0,
+            mastery_ceiling: 1.5,
             session_size: 5,
             encompass_credit: 0.5,
             lapse_at: 0.5,
@@ -76,24 +92,40 @@ impl Default for SchedConfig {
 
 pub type Fluencies = BTreeMap<NodeId, Fluency>;
 
-/// Confidence after exponential decay for time elapsed since last practice.
+/// Days until this concept owes a fresh check. Negative means overdue by that many.
 ///
-/// `decayed = confidence * 0.5^(days_since / half_life_days)`. Never practised, or
-/// `now` earlier than `last_practiced`, yields the undecayed `confidence`. A
-/// `half_life_days` of zero or less, or non-finite, disables decay rather than
-/// producing infinities.
-pub fn decayed_confidence(f: &Fluency, now_days: i64, cfg: &SchedConfig) -> f32 {
-    let confidence = finite_nonnegative(f.confidence);
+/// The interval is `review_after_days * (mastery / target)`, so evidence buys time:
+/// a concept at the ceiling waits half again as long as one that just reached target.
+/// A concept never practised is due now, and so is one whose mastery is below target -
+/// there is nothing to wait for when the work is not done.
+///
+/// A non-positive or non-finite `review_after_days` means no concept is ever due on
+/// time alone, which is the honest reading of "spacing turned off".
+pub fn due_in(f: &Fluency, now_days: i64, cfg: &SchedConfig) -> i64 {
     let Some(last_practiced) = f.last_practiced else {
-        return confidence;
+        return 0;
     };
-    if now_days <= last_practiced || !cfg.half_life_days.is_finite() || cfg.half_life_days <= 0.0 {
-        return confidence;
+    if !cfg.review_after_days.is_finite() || cfg.review_after_days <= 0.0 {
+        return i64::MAX;
     }
+    let target = if cfg.target.is_finite() && cfg.target > 0.0 {
+        f64::from(cfg.target)
+    } else {
+        return 0;
+    };
+    let evidence = f64::from(finite_nonnegative(f.mastery)) / target;
+    let interval = (f64::from(cfg.review_after_days) * evidence).round();
+    // Saturating: an absurd config must not wrap the day counter into the past.
+    let interval = interval.clamp(0.0, i64::MAX as f64) as i64;
+    last_practiced
+        .saturating_add(interval)
+        .saturating_sub(now_days)
+}
 
-    let days_since = now_days.saturating_sub(last_practiced) as f64;
-    let factor = 0.5_f64.powf(days_since / f64::from(cfg.half_life_days));
-    finite_nonnegative((f64::from(confidence) * factor) as f32)
+/// Whether a fresh check is owed. Evidence being stale is not evidence being absent:
+/// this changes what to schedule, never what has been proven.
+pub fn is_due(f: &Fluency, now_days: i64, cfg: &SchedConfig) -> bool {
+    due_in(f, now_days, cfg) <= 0
 }
 
 fn finite_nonnegative(value: f32) -> f32 {
@@ -108,19 +140,22 @@ fn fluency_for(fluencies: &Fluencies, node: &str) -> Fluency {
     fluencies.get(node).cloned().unwrap_or_default()
 }
 
-/// True when every `requires`-predecessor of `node` has decayed confidence at or
-/// above `cfg.target`. A node with no prerequisites is always unlocked. A node
-/// absent from the graph is never unlocked.
+/// True when every `requires`-predecessor of `node` is *proven*: mastery at or above
+/// `cfg.target`, reached by at least one direct attempt. A node with no prerequisites
+/// is always unlocked. A node absent from the graph is never unlocked.
 ///
-/// This is keybr's rule: a new item is admitted only once everything already
-/// included is at target.
-pub fn is_unlocked(
-    graph: &Graph,
-    fluencies: &Fluencies,
-    node: &str,
-    now_days: i64,
-    cfg: &SchedConfig,
-) -> bool {
+/// Two properties this has to hold, both learned the hard way:
+///
+/// **Admission is monotonic in time.** It reads undecayed mastery, so a prerequisite
+/// proven today is still proven tomorrow. Gating on a decaying value meant a single
+/// perfect pass landed at exactly `target` and fell under it within one day, closing
+/// every dependent overnight. A one-day gate flicker is not a spacing policy.
+///
+/// **Credit is not proof.** An `encompasses` edge is an assertion about the graph,
+/// not a check that ran, and it can carry a node to `target` with zero attempts. Such
+/// a node stays practisable (see [`practisable`]) rather than unlocking others on
+/// evidence nobody produced.
+pub fn is_unlocked(graph: &Graph, fluencies: &Fluencies, node: &str, cfg: &SchedConfig) -> bool {
     if !graph.nodes.iter().any(|candidate| candidate.id == node) {
         return false;
     }
@@ -130,17 +165,51 @@ pub fn is_unlocked(
         .iter()
         .filter(|edge| edge.ty == crate::graph::EdgeType::Requires && edge.to == node)
         .all(|edge| {
-            graph
-                .nodes
-                .iter()
-                .any(|candidate| candidate.id == edge.from)
-                && decayed_confidence(&fluency_for(fluencies, &edge.from), now_days, cfg)
-                    >= cfg.target
+            graph.nodes.iter().any(|candidate| candidate.id == edge.from) && {
+                let f = fluency_for(fluencies, &edge.from);
+                f.attempts > 0 && finite_nonnegative(f.mastery) >= cfg.target
+            }
         })
 }
 
-/// Every node that is unlocked, not retired, and not yet at target — the set the
-/// session is drawn from. Sorted by node id.
+/// Why a concept is in the session. Ordered: the reasons above come first, and the
+/// ordering is a stated policy rather than a number that happens to sort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Reason {
+    /// Not yet at target. Weakest first, mastery in thousandths so the tuple is `Ord`
+    /// without imposing an order on floats.
+    BelowTarget(i32),
+    /// At target on encompass credit alone, never directly attempted. One attempt
+    /// settles whether the graph was telling the truth.
+    Unproven(i32),
+    /// Proven, and the review interval has elapsed. `due_in` is negative once
+    /// overdue, so the raw value already sorts the most overdue first — wrapping it
+    /// in `Reverse` would put the concept you neglected longest at the back.
+    DueForCheck(i64),
+}
+
+/// Why this concept is worth practising now, or `None` if it is settled.
+pub fn reason(f: &Fluency, now_days: i64, cfg: &SchedConfig) -> Option<Reason> {
+    let mastery = finite_nonnegative(f.mastery);
+    let thousandths = (f64::from(mastery) * 1000.0).clamp(0.0, f64::from(i32::MAX)) as i32;
+    if mastery < cfg.target {
+        return Some(Reason::BelowTarget(thousandths));
+    }
+    if f.attempts == 0 {
+        return Some(Reason::Unproven(thousandths));
+    }
+    if is_due(f, now_days, cfg) {
+        return Some(Reason::DueForCheck(due_in(f, now_days, cfg)));
+    }
+    None
+}
+
+/// Every unlocked node with a live [`Reason`] — the set a session is drawn from.
+/// Sorted by node id.
+///
+/// Reaching the mastery ceiling no longer removes a concept permanently. The ceiling
+/// caps how much evidence one concept can bank, and evidence buys interval, so a
+/// finished concept simply comes back rarely.
 pub fn practisable(
     graph: &Graph,
     fluencies: &Fluencies,
@@ -150,11 +219,8 @@ pub fn practisable(
     let mut result: Vec<_> = graph
         .nodes
         .iter()
-        .filter(|node| is_unlocked(graph, fluencies, &node.id, now_days, cfg))
-        .filter(|node| {
-            let confidence = decayed_confidence(&fluency_for(fluencies, &node.id), now_days, cfg);
-            confidence < cfg.retire_at && confidence < cfg.target
-        })
+        .filter(|node| is_unlocked(graph, fluencies, &node.id, cfg))
+        .filter(|node| reason(&fluency_for(fluencies, &node.id), now_days, cfg).is_some())
         .map(|node| node.id.clone())
         .collect();
     result.sort();
@@ -162,9 +228,14 @@ pub fn practisable(
     result
 }
 
-/// The single weakest practisable concept: what new practice material should be
-/// generated for. Ties break on node id ascending. `None` when nothing is
-/// practisable.
+/// The order a session works through concepts: by [`Reason`], then node id.
+fn urgency(fluencies: &Fluencies, node: &str, now_days: i64, cfg: &SchedConfig) -> Option<Reason> {
+    reason(&fluency_for(fluencies, node), now_days, cfg)
+}
+
+/// The most urgent practisable concept: what new practice material should be
+/// generated for. Ordered by [`Reason`], ties on node id ascending. `None` when
+/// nothing is practisable.
 pub fn focus(
     graph: &Graph,
     fluencies: &Fluencies,
@@ -190,9 +261,9 @@ pub fn focus_where(
         .into_iter()
         .filter(|id| graph.node(id).is_some_and(&keep))
         .min_by(|a, b| {
-            let a_confidence = decayed_confidence(&fluency_for(fluencies, a), now_days, cfg);
-            let b_confidence = decayed_confidence(&fluency_for(fluencies, b), now_days, cfg);
-            a_confidence.total_cmp(&b_confidence).then_with(|| a.cmp(b))
+            urgency(fluencies, a, now_days, cfg)
+                .cmp(&urgency(fluencies, b, now_days, cfg))
+                .then_with(|| a.cmp(b))
         })
 }
 
@@ -203,8 +274,8 @@ pub fn focus_where(
 /// the only rule that stays satisfiable when there are fewer practisable concepts
 /// than session slots:
 ///
-/// - order [`practisable`] by decayed confidence ascending, ties on node id
-///   ascending — call that the rotation
+/// - order [`practisable`] by [`Reason`], ties on node id ascending — call that the
+///   rotation
 /// - emit the rotation repeatedly until the session holds `cfg.session_size`
 ///   entries; the last pass may be partial
 /// - the session therefore has exactly `cfg.session_size` entries whenever
@@ -226,9 +297,9 @@ pub fn compose_session(
 
     let mut rotation = practisable(graph, fluencies, now_days, cfg);
     rotation.sort_by(|a, b| {
-        let a_confidence = decayed_confidence(&fluency_for(fluencies, a), now_days, cfg);
-        let b_confidence = decayed_confidence(&fluency_for(fluencies, b), now_days, cfg);
-        a_confidence.total_cmp(&b_confidence).then_with(|| a.cmp(b))
+        urgency(fluencies, a, now_days, cfg)
+            .cmp(&urgency(fluencies, b, now_days, cfg))
+            .then_with(|| a.cmp(b))
     });
     if rotation.is_empty() {
         return Vec::new();
@@ -244,9 +315,9 @@ pub fn compose_session(
 /// Record a graded attempt and propagate credit.
 ///
 /// On the attempted node: `attempts` increments, `best_score` takes the max,
-/// `last_practiced` becomes `now_days`, and `confidence` becomes
-/// `decayed_confidence(..) + score`, so a good attempt on a decayed concept both
-/// restores and advances it. Clamped to `0.0..=cfg.retire_at`.
+/// `last_practiced` becomes `now_days`, and `mastery` gains `score`. Clamped to
+/// `0.0..=cfg.mastery_ceiling`. Elapsed time is not subtracted first — evidence is
+/// not spent by waiting, it is only made stale, which [`due_in`] answers instead.
 ///
 /// Then the bridge. An `Edge { from, to, ty: Encompasses }` means mastery of `to`
 /// grants practice credit for `from`, so `to` is the harder node and `from` the
@@ -254,12 +325,12 @@ pub fn compose_session(
 /// keeps flowing because encompassing composes.
 ///
 /// Credit **attenuates per hop**: a node at encompass-depth `d` from the attempted
-/// node gains `score * cfg.encompass_credit.powi(d)`, applied on the same terms as
-/// a direct attempt, and has `last_practiced` set. With the default credit of 0.5
-/// that is half for a direct encompass, a quarter two hops out. `attempts` is
-/// **not** incremented for encompassed nodes; they were not attempted.
+/// node gains `score * cfg.encompass_credit.powi(d)`, and has `last_practiced` set.
+/// With the default credit of 0.5 that is half for a direct encompass, a quarter two
+/// hops out. `attempts` is **not** incremented for encompassed nodes; they were not
+/// attempted, and until one of them is, that node cannot unlock anything.
 ///
-/// This is what lets one exercise retire a pile of cards instead of competing with
+/// This is what lets one exercise settle a pile of cards instead of competing with
 /// them.
 ///
 /// Each node is credited exactly once, at its **shortest** encompass-depth, even
@@ -317,6 +388,20 @@ pub fn record_attempt(
     credited
 }
 
+/// Apply one gain to one node.
+///
+/// The lapse rule is **proportional, not a cliff**. A direct attempt scoring below
+/// `cfg.lapse_at` keeps `mastery * (score / lapse_at)` of what was banked, so a
+/// total failure erases everything, a near miss costs almost nothing, and the two
+/// meet continuously at the threshold. The previous rule discarded the whole balance
+/// the moment the score dipped under `lapse_at`: from a mastery of 0.99, scoring
+/// 0.50 landed on 1.49 and scoring 0.49 landed on 0.49. A hundredth of a point
+/// deciding a whole point of evidence is not a judgement anyone can defend,
+/// especially when the exercises being scored are generated and of uneven difficulty.
+///
+/// Only a direct attempt can demote. Credit arriving over an `encompasses` edge is a
+/// verdict on the node that was attempted, and must never cost this one what it
+/// earned.
 fn apply_credit(
     fluencies: &mut Fluencies,
     node: &str,
@@ -326,19 +411,22 @@ fn apply_credit(
     attempted: bool,
 ) {
     let previous = fluency_for(fluencies, node);
-    let ceiling = finite_nonnegative(cfg.retire_at);
-    // A failed attempt is evidence *against* mastery, so it discards what was
-    // accumulated rather than adding nothing to it. Only a direct attempt can
-    // demote: credit arriving over an `encompasses` edge is someone else's
-    // verdict, and must never cost this node the confidence it earned.
-    let carried = if attempted && gain < cfg.lapse_at {
-        0.0
+    let ceiling = finite_nonnegative(cfg.mastery_ceiling);
+    let banked = finite_nonnegative(previous.mastery);
+    let lapse_at = finite_nonnegative(cfg.lapse_at);
+    let carried = if attempted && gain < lapse_at {
+        // `lapse_at` of zero disables the rule rather than dividing by zero.
+        if lapse_at > 0.0 {
+            banked * (gain / lapse_at)
+        } else {
+            banked
+        }
     } else {
-        decayed_confidence(&previous, now_days, cfg)
+        banked
     };
-    let confidence = (carried + gain).clamp(0.0, ceiling);
+    let mastery = (carried + gain).clamp(0.0, ceiling);
     let entry = fluencies.entry(node.to_string()).or_default();
-    entry.confidence = finite_nonnegative(confidence);
+    entry.mastery = finite_nonnegative(mastery);
     entry.last_practiced = Some(now_days);
     if attempted {
         entry.attempts = entry.attempts.saturating_add(1);
@@ -394,9 +482,9 @@ mod tests {
         }
     }
 
-    fn fluency(confidence: f32, last_practiced: Option<i64>) -> Fluency {
+    fn fluency(mastery: f32, last_practiced: Option<i64>) -> Fluency {
         Fluency {
-            confidence,
+            mastery,
             last_practiced,
             ..Fluency::default()
         }
@@ -405,8 +493,8 @@ mod tests {
     fn config() -> SchedConfig {
         SchedConfig {
             target: 1.0,
-            half_life_days: 10.0,
-            retire_at: 1.5,
+            review_after_days: 10.0,
+            mastery_ceiling: 1.5,
             session_size: 5,
             encompass_credit: 0.5,
             lapse_at: 0.5,
@@ -420,55 +508,126 @@ mod tests {
         );
     }
 
-    #[test]
-    fn decay_obeys_elapsed_time_and_never_practised_rules() {
-        let cfg = config();
-        assert_close(decayed_confidence(&fluency(0.8, Some(10)), 20, &cfg), 0.4);
-        assert_close(decayed_confidence(&fluency(0.8, Some(10)), 10, &cfg), 0.8);
-        assert_close(decayed_confidence(&fluency(0.8, None), 100, &cfg), 0.8);
-        assert_close(decayed_confidence(&fluency(0.8, Some(10)), 9, &cfg), 0.8);
-    }
-
-    #[test]
-    fn invalid_half_lives_disable_decay() {
-        for half_life_days in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let cfg = SchedConfig {
-                half_life_days,
-                ..config()
-            };
-            assert_close(decayed_confidence(&fluency(0.8, Some(0)), 100, &cfg), 0.8);
+    /// A fluency with an attempt behind it, so `Unproven` does not mask what is
+    /// being asserted.
+    fn proven(mastery: f32, last_practiced: Option<i64>) -> Fluency {
+        Fluency {
+            mastery,
+            last_practiced,
+            attempts: 1,
+            ..Fluency::default()
         }
     }
 
     #[test]
-    fn unlocking_uses_decayed_prerequisite_confidence() {
+    fn the_review_interval_scales_with_evidence() {
+        let cfg = config();
+        // review_after_days 10, target 1.0: interval is 10 * mastery/target.
+        assert_eq!(due_in(&proven(1.0, Some(0)), 0, &cfg), 10);
+        assert_eq!(due_in(&proven(1.0, Some(0)), 10, &cfg), 0, "due exactly on time");
+        assert_eq!(due_in(&proven(1.0, Some(0)), 13, &cfg), -3, "overdue by three");
+        assert_eq!(
+            due_in(&proven(1.5, Some(0)), 0, &cfg),
+            15,
+            "the ceiling buys half again as long, not permanent retirement"
+        );
+        assert_eq!(
+            due_in(&proven(0.8, None), 100, &cfg),
+            0,
+            "never practised is due now"
+        );
+    }
+
+    #[test]
+    fn invalid_intervals_mean_nothing_is_due_on_time_alone() {
+        for review_after_days in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let cfg = SchedConfig {
+                review_after_days,
+                ..config()
+            };
+            assert!(
+                !is_due(&proven(0.8, Some(0)), 100_000, &cfg),
+                "spacing off must mean never due, not always due"
+            );
+        }
+    }
+
+    #[test]
+    fn unlocking_reads_undecayed_mastery_and_requires_an_attempt() {
         let graph = graph(
             &["root", "dependent"],
             vec![edge("root", "dependent", EdgeType::Requires)],
         );
         let mut fluencies = Fluencies::new();
 
-        assert!(is_unlocked(&graph, &fluencies, "root", 10, &config()));
-        assert!(!is_unlocked(&graph, &fluencies, "dependent", 10, &config()));
+        assert!(is_unlocked(&graph, &fluencies, "root", &config()));
+        assert!(!is_unlocked(&graph, &fluencies, "dependent", &config()));
 
+        // At target but never attempted: credited, not proven.
         fluencies.insert("root".into(), fluency(1.0, Some(0)));
-        assert!(is_unlocked(&graph, &fluencies, "dependent", 0, &config()));
-        assert!(!is_unlocked(&graph, &fluencies, "dependent", 10, &config()));
-        assert!(!is_unlocked(&graph, &fluencies, "missing", 0, &config()));
+        assert!(!is_unlocked(&graph, &fluencies, "dependent", &config()));
+
+        fluencies.insert("root".into(), proven(1.0, Some(0)));
+        assert!(is_unlocked(&graph, &fluencies, "dependent", &config()));
+        assert!(
+            is_unlocked(&graph, &fluencies, "dependent", &config()),
+            "and it stays open however long it has been"
+        );
+        assert!(!is_unlocked(&graph, &fluencies, "missing", &config()));
     }
 
     #[test]
-    fn practicable_excludes_target_boundary_and_retired_concepts() {
-        let graph = graph(&["learning", "target", "retired"], Vec::new());
+    fn practisable_covers_below_target_unproven_and_due() {
+        let graph = graph(
+            &["learning", "settled", "credited", "stale"],
+            Vec::new(),
+        );
         let mut fluencies = Fluencies::new();
-        fluencies.insert("learning".into(), fluency(0.99, Some(0)));
-        fluencies.insert("target".into(), fluency(1.0, Some(0)));
-        fluencies.insert("retired".into(), fluency(1.5, Some(0)));
+        fluencies.insert("learning".into(), proven(0.99, Some(0)));
+        fluencies.insert("settled".into(), proven(1.0, Some(0)));
+        fluencies.insert("credited".into(), fluency(1.2, Some(0)));
+        fluencies.insert("stale".into(), proven(1.0, Some(-40)));
         fluencies.insert("not-in-graph".into(), fluency(0.0, None));
 
         assert_eq!(
             practisable(&graph, &fluencies, 0, &config()),
-            vec!["learning"]
+            vec!["credited", "learning", "stale"],
+            "settled is at target, proven, and not yet due"
+        );
+    }
+
+    #[test]
+    fn reason_orders_deficit_before_unproven_before_due() {
+        let cfg = config();
+        let below = reason(&proven(0.5, Some(0)), 0, &cfg).unwrap();
+        let unproven = reason(&fluency(1.2, Some(0)), 0, &cfg).unwrap();
+        let due = reason(&proven(1.0, Some(-40)), 0, &cfg).unwrap();
+        assert!(below < unproven, "unfinished work outranks an unproven claim");
+        assert!(unproven < due, "an unproven claim outranks a routine re-check");
+        assert!(
+            reason(&proven(1.0, Some(0)), 0, &cfg).is_none(),
+            "settled concepts are not scheduled"
+        );
+    }
+
+    #[test]
+    fn the_longest_neglected_concept_is_scheduled_first() {
+        let cfg = config();
+        let mildly = reason(&proven(1.0, Some(-11)), 0, &cfg).unwrap();
+        let badly = reason(&proven(1.0, Some(-40)), 0, &cfg).unwrap();
+        assert!(
+            badly < mildly,
+            "30 days overdue must outrank 1 day overdue, got {badly:?} vs {mildly:?}"
+        );
+
+        let graph = graph(&["mild", "bad"], Vec::new());
+        let fluencies = Fluencies::from([
+            ("mild".into(), proven(1.0, Some(-11))),
+            ("bad".into(), proven(1.0, Some(-40))),
+        ]);
+        assert_eq!(
+            compose_session(&graph, &fluencies, 0, &SchedConfig { session_size: 2, ..cfg })[0],
+            "bad"
         );
     }
 
@@ -549,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_attempt_decays_then_advances_and_updates_attempt_metadata() {
+    fn a_direct_attempt_advances_without_charging_for_elapsed_time() {
         let graph = graph(&["skill"], Vec::new());
         let mut fluencies = Fluencies::from([(
             "skill".into(),
@@ -557,20 +716,22 @@ mod tests {
                 best_score: 0.8,
                 last_practiced: Some(0),
                 attempts: 2,
-                confidence: 1.0,
+                mastery: 0.6,
             },
         )]);
 
+        // Ten days on: under the old rule the banked 0.6 was halved before the gain
+        // was added, so waiting cost evidence. It no longer does.
         let credited = record_attempt(&graph, &mut fluencies, "skill", 0.6, 10, &config());
         let updated = &fluencies["skill"];
         assert!(credited.is_empty());
-        assert_close(updated.confidence, 1.1);
+        assert_close(updated.mastery, 1.2);
         assert_close(updated.best_score, 0.8);
         assert_eq!(updated.attempts, 3);
         assert_eq!(updated.last_practiced, Some(10));
 
         record_attempt(&graph, &mut fluencies, "skill", 1.0, 10, &config());
-        assert_close(fluencies["skill"].confidence, config().retire_at);
+        assert_close(fluencies["skill"].mastery, config().mastery_ceiling);
         assert_close(fluencies["skill"].best_score, 1.0);
     }
 
@@ -583,7 +744,7 @@ mod tests {
                 best_score: 1.0,
                 last_practiced: Some(10),
                 attempts: 4,
-                confidence: config().retire_at,
+                mastery: config().mastery_ceiling,
             },
         )]);
         assert!(!practisable(&graph, &fluencies, 10, &config()).contains(&"skill".to_string()));
@@ -591,7 +752,7 @@ mod tests {
         // Same day, so no decay: the demotion is the verdict talking, not time.
         record_attempt(&graph, &mut fluencies, "skill", 0.0, 10, &config());
         let updated = &fluencies["skill"];
-        assert_close(updated.confidence, 0.0);
+        assert_close(updated.mastery, 0.0);
         // History survives. What they once managed remains true, and the attempt counts.
         assert_close(updated.best_score, 1.0);
         assert_eq!(updated.attempts, 5);
@@ -603,7 +764,7 @@ mod tests {
     fn a_failed_attempt_never_demotes_an_encompassed_neighbour() {
         // `easier` is credited whenever `harder` is practised. A bad attempt on
         // `harder` is a verdict on `harder` alone: it must not cost `easier` the
-        // confidence it earned on its own.
+        // mastery it earned on its own.
         let graph = graph(
             &["easier", "harder"],
             vec![edge("easier", "harder", EdgeType::Encompasses)],
@@ -614,8 +775,8 @@ mod tests {
         ]);
 
         record_attempt(&graph, &mut fluencies, "harder", 0.0, 10, &config());
-        assert_close(fluencies["harder"].confidence, 0.0);
-        assert_close(fluencies["easier"].confidence, 1.2);
+        assert_close(fluencies["harder"].mastery, 0.0);
+        assert_close(fluencies["easier"].mastery, 1.2);
     }
 
     #[test]
@@ -632,9 +793,9 @@ mod tests {
 
         let credited = record_attempt(&graph, &mut fluencies, "harder", 1.0, 7, &config());
         assert_eq!(credited, BTreeSet::from(["easier".into(), "medium".into()]));
-        assert_close(fluencies["harder"].confidence, 1.0);
-        assert_close(fluencies["medium"].confidence, 0.5);
-        assert_close(fluencies["easier"].confidence, 0.25);
+        assert_close(fluencies["harder"].mastery, 1.0);
+        assert_close(fluencies["medium"].mastery, 0.5);
+        assert_close(fluencies["easier"].mastery, 0.25);
         assert_eq!(fluencies["harder"].attempts, 1);
         assert_eq!(fluencies["medium"].attempts, 0);
         assert_eq!(fluencies["easier"].attempts, 0);
@@ -657,9 +818,9 @@ mod tests {
 
         let credited = record_attempt(&graph, &mut fluencies, "a", 1.0, 0, &config());
         assert_eq!(credited, BTreeSet::from(["b".into(), "c".into()]));
-        assert_close(fluencies["a"].confidence, 1.0);
-        assert_close(fluencies["b"].confidence, 0.5);
-        assert_close(fluencies["c"].confidence, 0.25);
+        assert_close(fluencies["a"].mastery, 1.0);
+        assert_close(fluencies["b"].mastery, 0.5);
+        assert_close(fluencies["c"].mastery, 0.25);
         assert_eq!(fluencies["a"].attempts, 1);
     }
 
@@ -678,22 +839,24 @@ mod tests {
     }
 
     #[test]
-    fn non_finite_inputs_never_create_non_finite_confidence() {
+    fn non_finite_inputs_never_create_non_finite_output() {
         let graph = graph(&["a", "b"], vec![edge("b", "a", EdgeType::Encompasses)]);
         let mut fluencies = Fluencies::from([
             ("a".into(), fluency(f32::NAN, Some(0))),
             ("b".into(), fluency(f32::INFINITY, Some(0))),
         ]);
 
-        assert!(decayed_confidence(&fluencies["a"], 10, &config()).is_finite());
+        // The stored value is deliberately garbage; every reader must still be sane.
+        assert!(due_in(&fluencies["a"], 10, &config()) > i64::MIN);
+        assert!(reason(&fluencies["a"], 10, &config()).is_some());
         assert!(record_attempt(&graph, &mut fluencies, "a", f32::NAN, 10, &config()).is_empty());
-        assert!(fluencies["a"].confidence.is_nan());
+        assert!(fluencies["a"].mastery.is_nan());
         assert_eq!(fluencies["a"].attempts, 0);
         assert_eq!(fluencies["a"].last_practiced, Some(0));
-        assert_eq!(fluencies["b"].confidence, f32::INFINITY);
+        assert_eq!(fluencies["b"].mastery, f32::INFINITY);
         assert_eq!(fluencies["b"].attempts, 0);
 
         record_attempt(&graph, &mut fluencies, "a", 0.5, 10, &config());
-        assert!(fluencies.values().all(|f| f.confidence.is_finite()));
+        assert!(fluencies.values().all(|f| f.mastery.is_finite()));
     }
 }

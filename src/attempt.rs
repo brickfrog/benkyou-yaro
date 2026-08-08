@@ -174,7 +174,7 @@ pub fn practice_score(verdict: &Verdict) -> Option<f32> {
 pub struct Credited {
     pub node: String,
     pub score: f32,
-    pub confidence: Option<f32>,
+    pub mastery: Option<f32>,
     /// A set, not a list: `record_attempt` credits each ancestor once, and the
     /// ordering is what makes the CLI's output diffable between runs.
     pub also_credited: std::collections::BTreeSet<String>,
@@ -217,7 +217,7 @@ pub fn credit(
     Ok(Credited {
         node: concept.to_string(),
         score,
-        confidence: fluencies.get(concept).map(|f| f.confidence),
+        mastery: fluencies.get(concept).map(|f| f.mastery),
         also_credited,
     })
 }

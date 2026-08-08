@@ -55,8 +55,8 @@ fn encompass_credit_flows_from_harder_to_easier() {
     let credited = record_attempt(&g, &mut f, "hard", 1.0, 0, &cfg);
 
     assert!(credited.contains("easy"), "attempting the hard node must credit the easy one");
-    assert_eq!(f["hard"].confidence, 1.0);
-    assert_eq!(f["easy"].confidence, 0.5, "direct encompass gets one hop of credit");
+    assert_eq!(f["hard"].mastery, 1.0);
+    assert_eq!(f["easy"].mastery, 0.5, "direct encompass gets one hop of credit");
 
     // And not the other way round.
     let mut f2 = Fluencies::new();
@@ -83,9 +83,9 @@ fn encompass_credit_attenuates_per_hop() {
     let mut f = Fluencies::new();
     record_attempt(&g, &mut f, "a", 1.0, 0, &cfg);
 
-    assert_eq!(f["a"].confidence, 1.0);
-    assert_eq!(f["b"].confidence, 0.5, "one hop");
-    assert_eq!(f["c"].confidence, 0.25, "two hops");
+    assert_eq!(f["a"].mastery, 1.0);
+    assert_eq!(f["b"].mastery, 0.5, "one hop");
+    assert_eq!(f["c"].mastery, 0.25, "two hops");
 }
 
 /// Encompassed concepts were not attempted, so their attempt count must not move.
@@ -117,28 +117,109 @@ fn an_encompass_cycle_terminates_and_credits_once() {
 
     record_attempt(&g, &mut f, "a", 1.0, 0, &cfg);
 
-    assert_eq!(f["a"].confidence, 1.0, "the attempted node is not re-credited by the cycle");
-    assert_eq!(f["b"].confidence, 0.5);
+    assert_eq!(f["a"].mastery, 1.0, "the attempted node is not re-credited by the cycle");
+    assert_eq!(f["b"].mastery, 0.5);
 }
 
-/// A prerequisite you have let rot must re-lock its dependents: gating reads the
-/// decayed value, not the stored one.
+/// Time makes a prerequisite *due*, never unproven. Gating on a decaying value meant
+/// one perfect pass landed exactly on target and fell under it the next day, closing
+/// every dependent overnight; the learner had not forgotten anything in 24 hours.
 #[test]
-fn a_decayed_prerequisite_relocks_its_dependent() {
+fn a_stale_prerequisite_stays_unlocked_and_becomes_due() {
     let g = graph(&["base", "dep"], vec![edge("base", "dep", EdgeType::Requires)]);
     let cfg = SchedConfig {
         target: 1.0,
-        half_life_days: 10.0,
+        review_after_days: 10.0,
         ..SchedConfig::default()
     };
 
     let mut f = Fluencies::new();
     record_attempt(&g, &mut f, "base", 1.0, 0, &cfg);
 
-    assert!(is_unlocked(&g, &f, "dep", 0, &cfg), "at target on the day of practice");
+    assert!(is_unlocked(&g, &f, "dep", &cfg), "at target on the day of practice");
     assert!(
-        !is_unlocked(&g, &f, "dep", 40, &cfg),
-        "four half-lives later the prerequisite has rotted and must re-lock"
+        is_unlocked(&g, &f, "dep", &cfg),
+        "one day later the dependent must still be open - nothing was forgotten"
+    );
+    assert!(
+        !is_due(&f["base"], 1, &cfg),
+        "one day in, no check is owed yet"
+    );
+    assert!(
+        is_due(&f["base"], 40, &cfg),
+        "four intervals later a fresh check is owed"
+    );
+    assert!(
+        is_unlocked(&g, &f, "dep", &cfg),
+        "and being owed a check still does not close the dependent"
+    );
+    assert_eq!(
+        f["base"].mastery, 1.0,
+        "evidence is not spent by waiting"
+    );
+}
+
+/// Credit over an `encompasses` edge is an assertion about the graph, not a check
+/// that ran. It must not admit dependents on evidence nobody produced.
+#[test]
+fn encompass_credit_alone_does_not_unlock_a_dependent() {
+    let g = graph(
+        &["narrow", "broad", "dep"],
+        vec![
+            edge("narrow", "broad", EdgeType::Encompasses),
+            edge("narrow", "dep", EdgeType::Requires),
+        ],
+    );
+    let cfg = SchedConfig::default();
+
+    let mut f = Fluencies::new();
+    record_attempt(&g, &mut f, "broad", 1.0, 0, &cfg);
+    record_attempt(&g, &mut f, "broad", 1.0, 0, &cfg);
+
+    assert!(f["narrow"].mastery >= cfg.target, "credited to target");
+    assert_eq!(f["narrow"].attempts, 0, "but never actually attempted");
+    assert!(
+        !is_unlocked(&g, &f, "dep", &cfg),
+        "an unproven prerequisite must not admit its dependent"
+    );
+    assert!(
+        practisable(&g, &f, 0, &cfg).contains(&"narrow".to_string()),
+        "and must stay schedulable, or it can never become proven"
+    );
+
+    record_attempt(&g, &mut f, "narrow", 1.0, 0, &cfg);
+    assert!(
+        is_unlocked(&g, &f, "dep", &cfg),
+        "one direct attempt settles it"
+    );
+}
+
+/// A hundredth of a point must not decide a whole point of evidence.
+#[test]
+fn the_lapse_penalty_is_proportional_not_a_cliff() {
+    let g = graph(&["n"], vec![]);
+    let cfg = SchedConfig::default();
+
+    let outcome = |score: f32| {
+        let mut f = Fluencies::new();
+        record_attempt(&g, &mut f, "n", 0.99, 0, &cfg);
+        record_attempt(&g, &mut f, "n", score, 0, &cfg);
+        f["n"].mastery
+    };
+
+    let just_under = outcome(0.49);
+    let just_over = outcome(0.50);
+    assert!(
+        (just_over - just_under).abs() < 0.05,
+        "0.01 of score swung mastery from {just_under} to {just_over}"
+    );
+    assert!(
+        outcome(0.0) < 0.01,
+        "a total failure still erases the balance"
+    );
+    assert!(
+        outcome(0.25) < just_under,
+        "a worse score still costs more"
     );
 }
 
@@ -172,7 +253,7 @@ fn a_single_concept_session_repeats_it() {
 /// Nothing the scheduler does may produce a non-finite confidence, whatever the
 /// generated data looks like.
 #[test]
-fn confidence_never_becomes_non_finite() {
+fn mastery_never_becomes_non_finite() {
     let g = graph(
         &["a", "b"],
         vec![
@@ -181,11 +262,11 @@ fn confidence_never_becomes_non_finite() {
         ],
     );
 
-    for half_life in [0.0, -5.0, f32::NAN, f32::INFINITY] {
+    for review_after in [0.0, -5.0, f32::NAN, f32::INFINITY] {
         for credit in [0.5, f32::NAN, f32::INFINITY, -1.0] {
             for score in [1.0, 0.0, -3.0, 7.0] {
                 let cfg = SchedConfig {
-                    half_life_days: half_life,
+                    review_after_days: review_after,
                     encompass_credit: credit,
                     ..SchedConfig::default()
                 };
@@ -194,12 +275,12 @@ fn confidence_never_becomes_non_finite() {
                 record_attempt(&g, &mut f, "a", score, 99, &cfg);
                 for (id, fl) in &f {
                     assert!(
-                        fl.confidence.is_finite(),
-                        "{id} went non-finite: {fl:?} (half_life={half_life}, credit={credit}, score={score})"
+                        fl.mastery.is_finite(),
+                        "{id} went non-finite: {fl:?} (review_after={review_after}, credit={credit}, score={score})"
                     );
-                    assert!(fl.confidence >= 0.0, "{id} went negative: {fl:?}");
+                    assert!(fl.mastery >= 0.0, "{id} went negative: {fl:?}");
                     assert!(
-                        decayed_confidence(fl, 10_000, &cfg).is_finite(),
+                        (due_in(fl, 10_000, &cfg) as f32).is_finite(),
                         "{id} decayed to non-finite"
                     );
                 }

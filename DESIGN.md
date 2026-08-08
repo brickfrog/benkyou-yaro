@@ -429,17 +429,64 @@ renders code blocks as literal markup and silently defeats the styling.
 
 ## 5. Scheduling the procedural track
 
-Not an SRS. The model is mastery gating, taken from keybr — a tool whose whole value
-proposition is adaptive practice and which contains no scheduler at all: no due dates, no
-intervals, no forgetting curve.
+Not an SRS in the FSRS sense — nothing here schedules an *item* for re-presentation.
+The model is mastery gating, taken from keybr, a tool whose whole value proposition is
+adaptive practice and which contains no scheduler at all.
 
-- per-concept `confidence` measured against a target
-- a node unlocks only when every `requires`-predecessor has confidence ≥ 1
-- among unlocked concepts below target, the single weakest becomes the generation focus
+The state per concept is four numbers: `{ best_score, last_practiced, attempts,
+mastery }`. The load-bearing distinction is between the last two:
 
-Layered on top, the one thing keybr lacks and the spacing literature supports: coarse
-**session-level** spacing on days-since-last-touched, with exponential decay of
-confidence.
+- **`mastery` is evidence.** It accumulates from graded attempts and is never reduced
+  by elapsed time.
+- **Due-ness is a question about the calendar**, answered separately by `due_in`:
+  `review_after_days * (mastery / target)` days after the last attempt. More evidence
+  buys a longer interval.
+
+Collapsing those two was the original error, and it is worth recording because the
+code read plausibly for months. One `confidence` field stood for historical mastery,
+current retention, prerequisite readiness, ordering priority and retirement at once,
+and the value was decayed exponentially before every read. Three consequences, all
+verified against the shipped binary before being fixed:
+
+- **A one-day gate flicker.** Admission compared decayed confidence against a target
+  of exactly 1.0, and one perfect pass landed on exactly 1.0. A day later the
+  prerequisite sat at `1.0 × 0.5^(1/21) = 0.9675` and every dependent closed. Nobody
+  forgets a skill in 24 hours; the schedule simply could not represent "proven, and a
+  little stale".
+- **A lapse cliff.** From a confidence of 0.99, scoring 0.50 gave 1.49 and scoring
+  0.49 gave 0.49 — a hundredth of a point deciding a whole point of evidence, on
+  generated exercises of uneven difficulty.
+- **Mastery with no attempt.** Two `encompasses` hops could carry a node to target
+  with `attempts` still at zero, and that node then unlocked its dependents on
+  evidence no grader ever produced.
+
+So the rules now:
+
+- **Admission is monotonic.** A node unlocks when every `requires`-predecessor has
+  undecayed `mastery ≥ target` *and* at least one direct attempt. Once open, it stays
+  open until a direct failure says otherwise. An `encompasses` edge is an assertion
+  about the graph, not a check that ran, so a node carried to target by credit alone
+  stays schedulable and unlocks nothing until someone sits down to it.
+- **Time raises priority, never lowers evidence.** A concept past its interval becomes
+  `DueForCheck`, most overdue first.
+- **The ceiling is not retirement.** `mastery_ceiling` caps how much evidence one
+  concept can bank, and evidence buys interval, so a finished concept returns rarely
+  rather than never. Heathcote, Brown & Mewhort (2000) show individual acquisition
+  curves fit exponentials with a hard asymptote rather than power laws — that is a
+  claim about how quickly improvement stops, not a promise that performance never
+  decays, and it cannot license never checking again. The earlier text leaned on it
+  for exactly that, which was more than the paper says.
+- **Lapses are proportional.** A direct attempt below `lapse_at` keeps
+  `mastery × (score / lapse_at)`: total failure erases the balance, a near miss costs
+  almost nothing, and the two meet continuously at the threshold.
+- **Only a direct attempt can demote.** Credit arriving over an `encompasses` edge is
+  a verdict on the node that was attempted, and must never cost its neighbours what
+  they earned.
+
+What to practise next is an ordered `Reason` — `BelowTarget`, then `Unproven`, then
+`DueForCheck` — rather than a scalar that happens to sort. Unfinished work outranks an
+unproven claim, which outranks a routine re-check. Stating the order as a policy is
+honest about the fact that these three are not commensurable quantities.
 
 Session composition is interleaved across concepts, never blocked by topic — the
 guarantee being that no two adjacent entries share a concept whenever two or more are
@@ -448,24 +495,11 @@ practisable. It has to degrade rather than fail when they do not: a session is a
 repeated. Interleaving is a property of the ordering, not a promise of variety the
 schedule cannot always keep.
 
-State per concept is four numbers: `{ best_score, last_practiced, attempts, confidence }`.
-
-Retire on a mastery criterion rather than reviewing forever. Individual learning curves
-are exponential with a hard asymptote, not power-law — the power law is an averaging
-artifact (Heathcote, Brown & Mewhort 2000).
-
-Retirement has to be reversible or it is a trap. Confidence otherwise only accumulates
-— `confidence += score` — so a concept that reached `retire_at` could never come back,
-and failing its exercise would add zero and leave it retired forever. That is exactly
-backwards: failing is the strongest available evidence that a concept is *not* mastered.
-So a direct attempt scoring below `lapse_at` discards the confidence accumulated so far
-instead of adding nothing to it, and the concept is schedulable again on the next
-session. `best_score` and `attempts` are untouched: what the learner once managed
-remains true.
-
-Only a direct attempt can demote. Credit arriving over an `encompasses` edge is a
-verdict on the node that was attempted, not on its neighbours, and must never cost them
-the confidence they earned.
+None of these constants are calibrated. `target`, `review_after_days`,
+`mastery_ceiling` and `lapse_at` are policy, chosen to be defensible rather than
+fitted, because a single-user tool has no outcome data to fit them to. The structure
+is meant to be correct — evidence separate from staleness, an ordering that is stated
+rather than emergent — and the numbers are meant to be replaceable.
 
 ---
 

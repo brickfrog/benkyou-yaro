@@ -155,6 +155,8 @@ fn a_healthy_store_reports_practice_and_never_lists_the_fluency_sibling() {
     let (_, v) = goals(&home);
     let dir = PathBuf::from(v["dir"].as_str().unwrap());
     fs::write(dir.join("ramp.json"), real_graph()).unwrap();
+    // Written with the pre-split key name on purpose: files this old must keep
+    // loading, and `mastery` carries a `serde(alias = "confidence")` for exactly this.
     fs::write(
         dir.join("ramp.fluency.json"),
         r#"{"sql_joins": {"confidence": 2.0, "last_practiced": 0, "attempts": 1, "best_score": 1.0}}"#,
@@ -165,9 +167,12 @@ fn a_healthy_store_reports_practice_and_never_lists_the_fluency_sibling() {
     assert!(ok);
     let goals = v["goals"].as_array().unwrap();
     assert_eq!(goals.len(), 1, "the fluency sibling was listed: {goals:#?}");
-    assert_eq!(goals[0]["practised"], 1);
-    // 2.0 is past the default retire_at, so it counts as retired rather than merely seen.
-    assert_eq!(goals[0]["retired"], 1);
+    assert_eq!(goals[0]["practised"], 1, "the old key did not survive the rename");
+    // Past the ceiling, and last practised at the epoch, so a check is long overdue.
+    // Reported as two separate facts: reaching the ceiling is not retirement.
+    assert_eq!(goals[0]["at_ceiling"], 1);
+    assert_eq!(goals[0]["due"], 1);
+    assert!(goals[0]["retired"].is_null(), "retirement no longer exists");
     assert!(goals[0]["fluency_unreadable"].is_null(), "healthy run reported a loss");
 }
 

@@ -346,18 +346,28 @@ fn run(args: &[String]) -> Result<String, String> {
                             Ok(f) => {
                                 // Only a direct `grade` or `practice` increments
                                 // `attempts`. An `encompasses` edge also opens a fluency
-                                // record for the node underneath, at a credited
-                                // confidence and zero attempts — counting those as
-                                // practised tells the learner they drilled something they
-                                // have never once sat down to, which is the same
-                                // overstatement as counting a claim as knowledge.
+                                // record for the node underneath, at credited mastery
+                                // and zero attempts — counting those as practised tells
+                                // the learner they drilled something they have never
+                                // once sat down to, which is the same overstatement as
+                                // counting a claim as knowledge.
                                 entry["practised"] =
                                     f.values().filter(|x| x.attempts > 0).count().into();
                                 entry["credited"] =
                                     f.values().filter(|x| x.attempts == 0).count().into();
-                                entry["retired"] = f
+                                // Not "retired": reaching the ceiling buys the longest
+                                // review interval, it does not remove a concept from the
+                                // schedule. Reporting it as retirement would promise a
+                                // finish line the scheduler no longer has.
+                                let today = store::today();
+                                entry["at_ceiling"] = f
                                     .values()
-                                    .filter(|x| x.confidence >= cfg.retire_at)
+                                    .filter(|x| x.mastery >= cfg.mastery_ceiling)
+                                    .count()
+                                    .into();
+                                entry["due"] = f
+                                    .values()
+                                    .filter(|x| sched::is_due(x, today, &cfg))
                                     .count()
                                     .into();
                             }
@@ -630,7 +640,7 @@ fn run(args: &[String]) -> Result<String, String> {
             json(&serde_json::json!({
                 "node": node,
                 "score": score,
-                "confidence": fluencies.get(&node).map(|f| f.confidence),
+                "mastery": fluencies.get(&node).map(|f| f.mastery),
                 "also_credited": credited,
                 "warning": self_scored,
             }))
@@ -892,7 +902,7 @@ fn run(args: &[String]) -> Result<String, String> {
                 practice = serde_json::json!({
                     "node": c.node,
                     "score": c.score,
-                    "confidence": c.confidence,
+                    "mastery": c.mastery,
                     "also_credited": c.also_credited,
                 });
             }
