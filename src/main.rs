@@ -96,11 +96,15 @@ USAGE
       text, so a regenerated card updates in place and keeps its review history.
 
   benkyou gate <exercise-dir> [--scratch DIR]
-      Run the validation gate: the reference solution must pass and the untouched
-      starting state must fail. Records the result in `.gate.json` beside the
-      exercise, which is what makes it showable; your own files are not touched.
-      The record is bound to a hash of the exercise, so any later edit ungates it
-      until you run this again. Exits non-zero if the exercise is rejected.
+      Run the validation gate. The reference solution must pass, the untouched
+      starting state must fail, and every [[known_bad]] answer named in task.toml
+      must fail without breaking the grader. At least one is required: the first
+      two runs share an author with the exercise, so only a wrong answer you
+      commit to in advance can catch a grader that misread the concept.
+      Records the result in `.gate.json` beside the exercise, which is what makes
+      it showable; your own files are not touched. The record is bound to a hash
+      of the exercise, so any later edit ungates it until you run this again.
+      Exits non-zero if the exercise is rejected.
 
   benkyou attempt <exercise-dir> [--work <dir>]
       Materialise a workspace and sit down to the exercise. Refuses anything the

@@ -256,20 +256,46 @@ of them - even to fix a typo in the prose - and `attempt`, `grade` and `serve` a
 with `changed since it was gated` until you re-run the gate. Do not hand-write or copy a
 `.gate.json`; the digest will not match and the refusal is the point.
 
-**The gate is necessary and nowhere near sufficient.** `benkyou gate` proves only that
-the reference passes and an empty stub fails. That bar is low enough to be met by an
-exercise that grades nothing.
+**The gate is necessary and nowhere near sufficient.** Two of its directions prove only
+that the reference passes and an empty stub fails. That bar is met by an exercise that
+grades nothing.
 
-Before submitting, run the discrimination check by hand:
+The third direction is the one that costs you something: **`known_bad`, at least one,
+and the gate rejects the exercise without it.** Name a wrong answer and the mistake it
+embodies, in full, as static file content:
 
-1. Copy the exercise to `/tmp`, replace `solution/solve.sh` with a **plausible wrong**
-   answer — the mistake the learner would actually make — and gate it. It must be
-   `Rejected`. Do at least two.
-2. Replace it with a **differently written correct** answer. It must be `Validated`.
+```toml
+[[known_bad]]
+id = "sorted_not_first_seen"
+trap = "sorts the output instead of preserving first appearance"
+files."solution.py" = """
+def dedupe(xs):
+    return sorted(set(xs))
+"""
+```
 
-If a wrong answer passes, the exercise is decoration. Change the hidden data or tighten
-the required output until it discriminates. This is where the value is: a kata that
-rejects an empty file and accepts everything else teaches nothing.
+The gate writes those files into a fresh workspace and runs the grader. The candidate
+must **fail**, and must not break the grader — a crash is not a catch, because a grader
+that cannot parse anything would otherwise score full marks against every trap.
+
+**Why this and not your own reading.** You write the concept, the instruction, the
+reference and the checks. If you misread the concept, all four agree with each other
+and are wrong together, and no amount of re-reading finds it: you are checking your
+work against the same misreading that produced it. Sampling more attempts does not help
+either, since the error is common to the model, not to the sample.
+
+A named wrong answer converts that into an arithmetic contradiction. Either your
+candidate fails — and the grader measures the thing you said it measures — or it passes,
+and you have proof, not a suspicion, that it does not. Write the answer a learner who
+*half* understands would produce. A syntax error fails for the wrong reason and tells
+you nothing.
+
+**What it does not prove.** These are mutation tests for the grader. A model wrong
+about the concept can be consistently wrong across the reference, the checks *and* its
+own candidates, and everything still passes. The gate also cannot tell whether a
+candidate failed for the reason you named or for an unrelated one. The narrow claim —
+*this grader rejects this specific answer* — is the true one; do not read more into a
+`Validated`.
 
 Other rules that cost real debugging:
 

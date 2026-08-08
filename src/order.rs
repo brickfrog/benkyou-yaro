@@ -254,6 +254,13 @@ fn exercise_order(graph: &Graph, id: &str) -> (Value, Value) {
         "The grading data in check/ must differ from the sample in setup/. An exercise \
          graded on the data it showed you rewards hardcoding."
             .to_string(),
+        "known_bad is required: name at least one wrong answer that must fail, and the \
+         mistake it embodies. Write the answer a learner who half-understands would \
+         actually produce, not a syntax error — a candidate that fails because it does \
+         not parse tells you nothing about whether the grader measures the concept. \
+         This is the only check that can catch a grader you misread the concept into, \
+         because everything else you write here agrees with your reading of it."
+            .to_string(),
     ];
     if is_sql_ish(graph, id) {
         rules.push(
@@ -312,6 +319,16 @@ fn exercise_order(graph: &Graph, id: &str) -> (Value, Value) {
                 "must_pass": ["correctness"],
                 "hidden": true,
             },
+            // At least one is required and the gate rejects the exercise without it.
+            // Named here rather than left to the rules text because an agent fills in
+            // the shape it is given: an absent key is a key that does not get written,
+            // and the first thing the author would see is a rejection they have to go
+            // and look up.
+            "known_bad": [{
+                "id": "<short_name_for_the_mistake>",
+                "trap": "<the misconception, in one line>",
+                "files": { "<file the learner edits>": "<a wrong answer, in full>" },
+            }],
         },
         "rules": rules,
     });

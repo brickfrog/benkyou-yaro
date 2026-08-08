@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use crate::attempt;
 use crate::exercise::{self, Reward, Task, Verdict};
 use crate::record::{Event, Recorder};
-use crate::gate::WORK;
+use crate::gate::{safe_join, WORK};
 use crate::run::{Access, Backend, Job};
 use crate::serve::{Request, Response, ShutdownHandle};
 
@@ -440,36 +440,6 @@ fn dir_has_files(dir: &Path) -> bool {
     std::fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(false)
 }
 
-/// Resolve a learner-supplied relative path inside the workspace, or refuse.
-///
-/// Checked lexically on the *cleaned* path rather than by canonicalising, because the
-/// target may not exist yet — canonicalize fails on a new file, and doing it on the
-/// parent instead silently permits a symlinked parent. Rejecting `..` and absolute
-/// roots outright is the rule that holds for files that do not exist.
-///
-/// This is a guard against the page sending a wrong path, not a security boundary:
-/// the learner's own code runs unconfined a moment later. See README.
-fn safe_join(work: &Path, rel: &str) -> Result<PathBuf, String> {
-    if rel.is_empty() {
-        return Err("empty path".into());
-    }
-    let p = Path::new(rel);
-    if p.is_absolute() {
-        return Err(format!("{rel}: absolute paths are not writable here"));
-    }
-    let mut out = work.to_path_buf();
-    for part in p.components() {
-        match part {
-            std::path::Component::Normal(s) => out.push(s),
-            std::path::Component::CurDir => {}
-            _ => return Err(format!("{rel}: path must stay inside the workspace")),
-        }
-    }
-    if out.is_symlink() {
-        return Err(format!("{rel}: refusing to write through a symlink"));
-    }
-    Ok(out)
-}
 
 /// Read the workspace as editable text.
 ///
@@ -607,6 +577,7 @@ mod tests {
             empty_fails,
             validated_at: "x".into(),
             digest: digest.into(),
+            known_bad_caught: vec!["trap".into()],
             runner: exercise::Runner::of(&Backend::select(false).expect("a sandbox")),
             env: exercise::Env::current(),
         };
@@ -672,6 +643,7 @@ mod tests {
                 empty_fails: true,
                 validated_at: "x".into(),
                 digest,
+                known_bad_caught: vec!["trap".into()],
                 runner: exercise::Runner::of(&backend),
                 env: exercise::Env::current(),
             },

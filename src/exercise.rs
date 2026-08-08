@@ -236,13 +236,28 @@ pub struct Gate {
     /// How it was executed. Without this the verdict outlives its *conditions*.
     pub runner: Runner,
     pub env: Env,
+    /// Ids of the named wrong answers this grader actually rejected.
+    ///
+    /// A list rather than a count so a reader can see *which* traps sprang, and so
+    /// removing one from `task.toml` changes the digest and forces a re-gate.
+    #[serde(default)]
+    pub known_bad_caught: Vec<String>,
 }
 
 impl Gate {
-    /// True when both directions held. A record that exists and says otherwise is a
+    /// True when every direction held. A record that exists and says otherwise is a
     /// recorded *failure*, which is not the same as no record at all.
     pub fn holds(&self) -> bool {
-        self.solution_passes && self.empty_fails
+        self.solution_passes && self.empty_fails && !self.known_bad_caught.is_empty()
+    }
+
+    /// True for a record written before wrong answers were required.
+    ///
+    /// Distinguished from a rejection because it is not one: the exercise may be
+    /// perfectly good and simply has not been asked the newer question. The reader
+    /// needs "gate it again", not "this is not an exercise".
+    pub fn predates_known_bad(&self) -> bool {
+        self.solution_passes && self.empty_fails && self.known_bad_caught.is_empty()
     }
 }
 
@@ -272,6 +287,40 @@ impl Workspace {
     }
 }
 
+/// A wrong answer the author names in advance, and the mistake it embodies.
+///
+/// The gate's two directions prove an exercise is solvable and that its checks are not
+/// vacuous. Neither says the grader discriminates on the *concept*. A grader that
+/// accepts anything except an empty file passes both and teaches nothing, and the
+/// author cannot catch it by reading their own work: the same model that misread the
+/// concept writes the reference, the checks and the prose, so they agree with each
+/// other and are wrong together.
+///
+/// A known-bad candidate breaks that agreement by making the author commit to a
+/// prediction the machine can test: *this specific answer must fail, for this reason*.
+/// If it passes, the grader does not measure what the exercise claims to teach, and
+/// that is an arithmetic contradiction rather than a matter of opinion.
+///
+/// These are mutation tests for the grader. They do **not** show the exercise teaches
+/// the intended concept — a model wrong about the concept can be consistently wrong
+/// across the reference, the checks *and* its own candidates. The narrower claim is
+/// the one that is true.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KnownBad {
+    pub id: String,
+    /// The misconception in one line, printed when the candidate wrongly passes. The
+    /// reader needs to know which trap failed to spring, not that one did.
+    pub trap: String,
+    /// Files written into a fresh workspace, relative path to content.
+    ///
+    /// Static content and not a command, deliberately. An executable `apply` step
+    /// would be one more generated script to run, which is the thing the execution
+    /// boundary exists to bound; and a candidate that can compute is a candidate that
+    /// can read the answer. Paths are resolved with `gate::safe_join`, so a generated
+    /// `task.toml` cannot reach `../../check/check.sh` and grade itself.
+    pub files: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub schema_version: String,
@@ -284,6 +333,12 @@ pub struct Task {
     /// Kept last because TOML tables must follow every plain value in the struct.
     #[serde(default, skip_serializing_if = "Workspace::is_empty")]
     pub workspace: Workspace,
+    /// Wrong answers that must fail. At least one is required; see [`KnownBad`].
+    ///
+    /// After `workspace` because an array of tables has to follow every other table
+    /// in TOML, not only every plain value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_bad: Vec<KnownBad>,
 }
 
 /// Read the gate's verdict for an exercise, if one has been recorded.
@@ -337,6 +392,12 @@ pub fn require_current(dir: &Path, backend: &crate::run::Backend) -> Result<(), 
             dir.display()
         )
     })?;
+    if gate.predates_known_bad() {
+        return Err(format!(
+            "{}: gated before wrong answers were required - run `benkyou gate` again",
+            dir.display()
+        ));
+    }
     if !gate.holds() {
         return Err(format!(
             "{}: the gate rejected this exercise (solution_passes={}, empty_fails={})",
@@ -501,8 +562,16 @@ pub enum GateFailure {
     SolutionFailed(Verdict),
     /// The untouched starting state passed. The checks assert nothing.
     ChecksVacuous(Verdict),
-    /// The exercise changed while the gate was running, so neither run describes
-    /// what is now on disk and there is nothing to certify.
+    /// No wrong answer was named, so nothing tested whether the grader discriminates.
+    NoKnownBad,
+    /// A named wrong answer passed. The grader does not catch the mistake the author
+    /// said it would, which makes the exercise decoration.
+    KnownBadPassed { id: String, trap: String },
+    /// The grader broke on a named wrong answer rather than failing it. It cannot
+    /// judge that input at all, so its verdict on any other input is not evidence.
+    KnownBadBrokeTheGrader { id: String, verdict: Verdict },
+    /// The exercise changed while the gate was running, so no run describes what is
+    /// now on disk and there is nothing to certify.
     ContentChangedDuringGate { before: String, after: String },
 }
 
@@ -512,14 +581,20 @@ pub enum GateOutcome {
     Rejected(GateFailure),
 }
 
-/// Decide the gate from the two runs.
+/// Decide the gate from its runs.
 ///
 /// Run 1 applies `solution/solve.sh` and must pass. Run 2 leaves `setup/` untouched
 /// and must fail. Both are required: run 1 alone admits a vacuous check that passes on
 /// an empty workspace, and run 2 alone admits an unsolvable exercise.
+///
+/// Runs 3..n apply one named wrong answer each and must fail *without breaking the
+/// grader*. The distinction matters: a candidate that makes `check.sh` crash has not
+/// been judged, and counting a crash as a catch is how a grader that cannot parse
+/// anything scores full marks on the whole suite.
 pub fn gate_outcome(
     solution: &Verdict,
     empty: &Verdict,
+    known_bad: &[(&KnownBad, Verdict)],
     at: &str,
     digest: &str,
     backend: &crate::run::Backend,
@@ -531,9 +606,27 @@ pub fn gate_outcome(
     if empty.is_pass() || matches!(empty, Verdict::CheckBroken(_)) {
         return GateOutcome::Rejected(GateFailure::ChecksVacuous(empty.clone()));
     }
+    if known_bad.is_empty() {
+        return GateOutcome::Rejected(GateFailure::NoKnownBad);
+    }
+    for (candidate, verdict) in known_bad {
+        if let Verdict::CheckBroken(_) = verdict {
+            return GateOutcome::Rejected(GateFailure::KnownBadBrokeTheGrader {
+                id: candidate.id.clone(),
+                verdict: verdict.clone(),
+            });
+        }
+        if verdict.is_pass() {
+            return GateOutcome::Rejected(GateFailure::KnownBadPassed {
+                id: candidate.id.clone(),
+                trap: candidate.trap.clone(),
+            });
+        }
+    }
     GateOutcome::Validated(Gate {
         solution_passes: true,
         empty_fails: true,
+        known_bad_caught: known_bad.iter().map(|(c, _)| c.id.clone()).collect(),
         validated_at: at.to_string(),
         digest: digest.to_string(),
         runner: Runner::of(backend),
@@ -552,6 +645,7 @@ pub fn load(dir: &Path) -> Result<Task, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::LazyLock;
 
     fn verify(must_pass: &[&str]) -> Verify {
         Verify {
@@ -561,6 +655,109 @@ mod tests {
             advisory: vec!["approach".into()],
             hidden: true,
         }
+    }
+
+    fn trap(id: &str) -> KnownBad {
+        KnownBad {
+            id: id.into(),
+            trap: "a named misconception".into(),
+            files: BTreeMap::from([("solution.py".to_string(), "wrong".to_string())]),
+        }
+    }
+
+    /// One wrong answer, correctly rejected — the shape every passing gate has.
+    fn caught() -> Vec<(&'static KnownBad, Verdict)> {
+        static ONE: LazyLock<KnownBad> = LazyLock::new(|| KnownBad {
+            id: "trap".into(),
+            trap: "a named misconception".into(),
+            files: BTreeMap::new(),
+        });
+        vec![(&*ONE, Verdict::Fail(BTreeMap::from([("correctness".into(), 0.0)])))]
+    }
+
+    /// The failure the whole feature exists for.
+    ///
+    /// Both original directions hold: the reference passes, the empty stub fails. A
+    /// grader that misread the concept looks exactly like this, because the same model
+    /// wrote the reference and the checks and they agree with each other. The named
+    /// wrong answer is the only thing that disagrees.
+    #[test]
+    fn a_wrong_answer_that_passes_rejects_the_exercise() {
+        let t = trap("sorted_not_first_seen");
+        let outcome = gate_outcome(
+            &Verdict::Pass,
+            &Verdict::Fail(BTreeMap::from([("correctness".into(), 0.0)])),
+            &[(&t, Verdict::Pass)],
+            "t",
+            "d",
+            &crate::run::Backend::UnsafeHost,
+        );
+        match outcome {
+            GateOutcome::Rejected(GateFailure::KnownBadPassed { id, .. }) => {
+                assert_eq!(id, "sorted_not_first_seen");
+            }
+            other => panic!("expected KnownBadPassed, got {other:?}"),
+        }
+    }
+
+    /// A candidate that breaks the grader has not been judged by it.
+    ///
+    /// Counting a crash as a catch is how a grader that cannot parse anything scores
+    /// full marks on a whole suite of traps.
+    #[test]
+    fn a_wrong_answer_that_breaks_the_grader_is_not_a_catch() {
+        let t = trap("syntax_error");
+        let outcome = gate_outcome(
+            &Verdict::Pass,
+            &Verdict::Fail(BTreeMap::from([("correctness".into(), 0.0)])),
+            &[(&t, Verdict::CheckBroken("boom".into()))],
+            "t",
+            "d",
+            &crate::run::Backend::UnsafeHost,
+        );
+        assert!(matches!(
+            outcome,
+            GateOutcome::Rejected(GateFailure::KnownBadBrokeTheGrader { .. })
+        ));
+    }
+
+    /// Naming none is not the same as naming one that passes, and the reader needs the
+    /// difference: one says write a trap, the other says the grader is broken.
+    #[test]
+    fn naming_no_wrong_answer_rejects_the_exercise() {
+        let outcome = gate_outcome(
+            &Verdict::Pass,
+            &Verdict::Fail(BTreeMap::from([("correctness".into(), 0.0)])),
+            &[],
+            "t",
+            "d",
+            &crate::run::Backend::UnsafeHost,
+        );
+        assert!(matches!(
+            outcome,
+            GateOutcome::Rejected(GateFailure::NoKnownBad)
+        ));
+    }
+
+    /// A record from before wrong answers were required is not a rejection, and saying
+    /// "this is not an exercise" about a perfectly good one would send the reader to
+    /// rewrite it instead of re-gating it.
+    #[test]
+    fn a_record_predating_known_bad_is_its_own_refusal() {
+        let old = Gate {
+            solution_passes: true,
+            empty_fails: true,
+            validated_at: "t".into(),
+            digest: "d".into(),
+            known_bad_caught: Vec::new(),
+            runner: Runner::of(&crate::run::Backend::UnsafeHost),
+            env: Env::current(),
+        };
+        assert!(old.predates_known_bad());
+        assert!(!old.holds());
+
+        let rejected = Gate { solution_passes: false, ..old.clone() };
+        assert!(!rejected.predates_known_bad(), "a rejection is not merely old");
     }
 
     #[test]
@@ -639,19 +836,19 @@ mod tests {
 
         // Both hold.
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &fail, "t", "d", &crate::run::Backend::UnsafeHost),
+            gate_outcome(&Verdict::Pass, &fail, &caught(), "t", "d", &crate::run::Backend::UnsafeHost),
             GateOutcome::Validated(_)
         ));
 
         // Unsolvable as written.
         assert!(matches!(
-            gate_outcome(&fail, &fail, "t", "d", &crate::run::Backend::UnsafeHost),
+            gate_outcome(&fail, &fail, &caught(), "t", "d", &crate::run::Backend::UnsafeHost),
             GateOutcome::Rejected(GateFailure::SolutionFailed(_))
         ));
 
         // Vacuous: the empty workspace already passes.
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &Verdict::Pass, "t", "d", &crate::run::Backend::UnsafeHost),
+            gate_outcome(&Verdict::Pass, &Verdict::Pass, &caught(), "t", "d", &crate::run::Backend::UnsafeHost),
             GateOutcome::Rejected(GateFailure::ChecksVacuous(_))
         ));
     }
@@ -662,7 +859,7 @@ mod tests {
     fn a_broken_grader_on_the_empty_run_does_not_validate() {
         let broken = Verdict::CheckBroken("boom".into());
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &broken, "t", "d", &crate::run::Backend::UnsafeHost),
+            gate_outcome(&Verdict::Pass, &broken, &caught(), "t", "d", &crate::run::Backend::UnsafeHost),
             GateOutcome::Rejected(GateFailure::ChecksVacuous(_))
         ));
     }
@@ -673,6 +870,7 @@ mod tests {
             empty_fails,
             validated_at: "t".into(),
             digest: "d".into(),
+            known_bad_caught: vec!["trap".into()],
             runner: Runner::of(&crate::run::Backend::UnsafeHost),
             env: Env::current(),
         }

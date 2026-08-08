@@ -19,3 +19,29 @@ reward = "reward.json"
 must_pass = ["correctness"]
 advisory = ["approach"]
 hidden = true
+
+# Wrong answers that must fail. The gate runs each in a fresh workspace and rejects
+# the exercise if the grader lets one through.
+[[known_bad]]
+id = "sorted_not_first_seen"
+trap = "sorts the output instead of preserving first appearance"
+files."solution.py" = """
+def dedupe(xs):
+    return sorted(set(xs))
+"""
+
+[[known_bad]]
+id = "mutates_the_input"
+trap = "deduplicates in place, so the caller's list is destroyed"
+files."solution.py" = """
+def dedupe(xs):
+    seen = set()
+    i = 0
+    while i < len(xs):
+        if xs[i] in seen:
+            del xs[i]
+        else:
+            seen.add(xs[i])
+            i += 1
+    return xs
+"""

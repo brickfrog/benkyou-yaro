@@ -306,3 +306,136 @@ fn a_grader_cannot_reach_the_exercise_directory() {
     run_gate(&dir, &scratch("noreach-run"), "t", &sandbox()).expect("gate ran");
     assert!(!marker.exists(), "a grader wrote into its own source directory");
 }
+
+// ---------------------------------------------------------------------------
+// Named wrong answers
+// ---------------------------------------------------------------------------
+
+/// The failure the whole feature exists for, end to end.
+///
+/// A model that misreads "deduplicate, preserving first appearance" as "unique
+/// elements, sorted" writes a reference solution and a set of hidden cases that agree
+/// with each other. Both original gate directions hold: the reference passes, the
+/// untouched stub fails. Nothing about running the exercise twice can see the problem,
+/// because the misreading is common to everything the model wrote.
+///
+/// The author's own named wrong answer is the one artifact that disagrees, and the
+/// contradiction is arithmetic rather than a matter of judgement.
+#[test]
+fn a_grader_that_misread_the_concept_is_rejected_by_its_own_trap() {
+    let dir = copy_fixture("drift");
+
+    // The drifted grader: expects sorted output, and no longer minds mutation.
+    let cases = dir.join("check/cases.py");
+    let mut text = fs::read_to_string(&cases).expect("read");
+    text = text
+        .replace("([3, 1, 3, 2, 1], [3, 1, 2]),", "([3, 1, 3, 2, 1], [1, 2, 3]),")
+        .replace(r#"(["b", "a", "b"], ["b", "a"]),"#, r#"(["b", "a", "b"], ["a", "b"]),"#);
+    let mutation = "    if xs != original:\n        failures.append(f\"dedupe mutated its input: {xs!r}\")\n";
+    text = text.replace(mutation, "");
+    fs::write(&cases, text).expect("write");
+
+    // ...and a reference solution that agrees with it, so direction one still passes.
+    fs::write(
+        dir.join("solution/solve.sh"),
+        "cat > solution.py <<'PY'\ndef dedupe(xs):\n    return sorted(set(xs))\nPY\n",
+    )
+    .expect("write");
+
+    let report = run_gate(&dir, &scratch("drift-run"), "t", &sandbox()).expect("gate ran");
+
+    assert!(report.solution.verdict.is_pass(), "direction one still holds");
+    assert!(
+        matches!(report.empty.verdict, Verdict::Fail(_)),
+        "direction two still holds: {:?}",
+        report.empty.verdict
+    );
+    match report.outcome {
+        GateOutcome::Rejected(GateFailure::KnownBadPassed { id, trap }) => {
+            assert_eq!(id, "sorted_not_first_seen");
+            assert!(trap.contains("first appearance"), "{trap}");
+        }
+        other => panic!("both directions passed and nothing caught the drift: {other:?}"),
+    }
+}
+
+/// An exercise that names no wrong answer cannot be shown, however sound its two
+/// directions look.
+#[test]
+fn an_exercise_with_no_named_wrong_answer_is_rejected() {
+    let dir = copy_fixture("notrap");
+    let path = dir.join("task.toml");
+    let text = fs::read_to_string(&path).expect("read");
+    let stripped = text.split("[[known_bad]]").next().expect("head").to_string();
+    fs::write(&path, stripped).expect("write");
+
+    let report = run_gate(&dir, &scratch("notrap-run"), "t", &sandbox()).expect("gate ran");
+    assert!(matches!(
+        report.outcome,
+        GateOutcome::Rejected(GateFailure::NoKnownBad)
+    ));
+    exercise::require_current(&dir, &sandbox()).expect_err("and it must not be showable");
+}
+
+/// Each candidate gets a fresh workspace. Sharing one would let the first candidate's
+/// files survive into the second, so a trap could spring on residue rather than on the
+/// answer it describes — and the gate would report a catch it did not earn.
+#[test]
+fn each_candidate_runs_in_its_own_workspace() {
+    let dir = copy_fixture("fresh");
+    let path = dir.join("task.toml");
+    let mut text = fs::read_to_string(&path).expect("read");
+    // A candidate that writes a *correct* solution to a second file. If workspaces
+    // leaked, the later candidate would inherit it.
+    text.push_str(
+        "\n[[known_bad]]\nid = \"leaves_litter\"\ntrap = \"writes an unrelated file\"\n\
+         files.\"solution.py\" = \"\"\"\ndef dedupe(xs):\n    return list(xs)\n\"\"\"\n\
+         files.\"litter.txt\" = \"residue\"\n",
+    );
+    fs::write(&path, text).expect("write");
+
+    let report = run_gate(&dir, &scratch("fresh-run"), "t", &sandbox()).expect("gate ran");
+    assert!(
+        matches!(report.outcome, GateOutcome::Validated(_)),
+        "{:?}",
+        report.outcome
+    );
+    assert_eq!(report.known_bad.len(), 3);
+    for (candidate, run) in &report.known_bad {
+        assert!(
+            matches!(run.verdict, Verdict::Fail(_)),
+            "{} should have failed, got {:?}",
+            candidate.id,
+            run.verdict
+        );
+        // Only the candidate that writes it has it.
+        let has_litter = run.root.join("work/litter.txt").exists();
+        assert_eq!(
+            has_litter,
+            candidate.id == "leaves_litter",
+            "{}: workspace leaked between candidates",
+            candidate.id
+        );
+    }
+}
+
+/// A candidate cannot write outside the workspace. A generated `task.toml` naming
+/// `../check/cases.py` would otherwise rewrite the tests it is being judged by.
+#[test]
+fn a_candidate_cannot_write_outside_the_workspace() {
+    let dir = copy_fixture("escape");
+    let path = dir.join("task.toml");
+    let mut text = fs::read_to_string(&path).expect("read");
+    text.push_str(
+        "\n[[known_bad]]\nid = \"escapes\"\ntrap = \"rewrites the grader\"\n\
+         files.\"../check/cases.py\" = \"import sys; sys.exit(0)\"\n",
+    );
+    fs::write(&path, text).expect("write");
+
+    let err = match run_gate(&dir, &scratch("escape-run"), "t", &sandbox()) {
+        Err(e) => e,
+        Ok(_) => panic!("a candidate escaping the workspace must be an error"),
+    };
+    assert!(err.contains("escapes"), "{err}");
+    assert!(err.contains("inside the workspace"), "{err}");
+}

@@ -90,21 +90,65 @@ pub(crate) fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve a caller-supplied relative path inside a directory, or refuse.
+///
+/// Checked lexically on the *cleaned* path rather than by canonicalising, because the
+/// target may not exist yet — canonicalize fails on a new file, and doing it on the
+/// parent instead silently permits a symlinked parent. Rejecting `..` and absolute
+/// roots outright is the rule that holds for files that do not exist.
+///
+/// Two callers with the same need: the browser resolving a path the page sent, and the
+/// gate laying a known-bad candidate's files into a workspace. The first is a guard
+/// against a wrong path; the second is a guard against a generated `task.toml` writing
+/// `../../check/check.sh` and grading itself.
+pub fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    if rel.is_empty() {
+        return Err("empty path".into());
+    }
+    let p = Path::new(rel);
+    if p.is_absolute() {
+        return Err(format!("{rel}: absolute paths are not writable here"));
+    }
+    let mut out = root.to_path_buf();
+    for part in p.components() {
+        match part {
+            std::path::Component::Normal(s) => out.push(s),
+            std::path::Component::CurDir => {}
+            _ => return Err(format!("{rel}: path must stay inside the workspace")),
+        }
+    }
+    if out.is_symlink() {
+        return Err(format!("{rel}: refusing to write through a symlink"));
+    }
+    Ok(out)
+}
+
+/// What is put in the workspace before the grader runs.
+///
+/// The three ways an exercise gets graded during a gate. Everything downstream is
+/// identical — same deadline, same layout, same grader — so a difference in verdict is
+/// a difference in the workspace and nothing else.
+#[derive(Debug, Clone, Copy)]
+pub enum Apply<'a> {
+    /// The reference answer. Must pass.
+    Solution,
+    /// Nothing: `setup/` as the learner first sees it. Must fail.
+    Nothing,
+    /// A named wrong answer. Must fail, and must not break the grader.
+    KnownBad(&'a exercise::KnownBad),
+}
+
 /// Build a run directory and grade it once.
 ///
-/// `solve` applies the reference solution before checking. Both directions run with
-/// the same deadline and the same working directory layout, so the only difference
-/// between them is whether the solution was applied.
-///
-/// The two halves are separate jobs with different views, and that is the point of
-/// splitting them: the reference solution never sees `check/`. A `solve.sh` that reads
-/// the hidden tests would pass the gate's first direction while proving nothing about
-/// whether the exercise is solvable from what the learner is given.
+/// Each variant of [`Apply`] is a separate job with its own view, and that is the
+/// point of splitting them: the reference solution never sees `check/`. A `solve.sh`
+/// that reads the hidden tests would pass the gate's first direction while proving
+/// nothing about whether the exercise is solvable from what the learner is given.
 pub fn run_once(
     exercise_dir: &Path,
     task: &Task,
     root: &Path,
-    solve: bool,
+    apply: Apply,
     backend: &Backend,
 ) -> Result<Run, String> {
     let work = root.join(WORK);
@@ -114,36 +158,52 @@ pub fn run_once(
     copy_dir(&exercise_dir.join("check"), &check)?;
     fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
 
-    if solve {
-        let solution = exercise_dir.join("solution");
-        let dst = root.join(SOLUTION);
-        copy_dir(&solution, &dst)?;
-        if !dst.join("solve.sh").exists() {
-            return Err(format!("{}: no solution/solve.sh", exercise_dir.display()));
+    match apply {
+        Apply::Nothing => {}
+        Apply::KnownBad(candidate) => {
+            // Written by this process, not by a script the candidate supplies. A
+            // candidate that can execute is one more generated script inside the
+            // boundary, and one that could read `check/` on its way past.
+            for (rel, body) in &candidate.files {
+                let dst = safe_join(&work, rel)
+                    .map_err(|e| format!("known_bad `{}`: {e}", candidate.id))?;
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+                }
+                fs::write(&dst, body).map_err(|e| format!("{}: {e}", dst.display()))?;
+            }
         }
-        let applied = backend.run(&Job::new(
-            root,
-            &[(WORK, Access::Write), (SOLUTION, Access::Read)],
-            WORK,
-            "sh ../solution/solve.sh",
-            task.limits.learner_secs,
-        ))?;
-        if !applied.succeeded() {
-            return Ok(Run {
-                root: root.to_path_buf(),
-                verdict: Verdict::CheckBroken(format!(
-                    "reference solution did not run: exit {:?}: {}",
-                    applied.exit_code,
-                    applied.stderr.trim()
-                )),
-                check_stdout: applied.stdout,
-                check_stderr: applied.stderr,
-            });
+        Apply::Solution => {
+            let solution = exercise_dir.join(SOLUTION);
+            let dst = root.join(SOLUTION);
+            copy_dir(&solution, &dst)?;
+            if !dst.join("solve.sh").exists() {
+                return Err(format!("{}: no solution/solve.sh", exercise_dir.display()));
+            }
+            let applied = backend.run(&Job::new(
+                root,
+                &[(WORK, Access::Write), (SOLUTION, Access::Read)],
+                WORK,
+                "sh ../solution/solve.sh",
+                task.limits.learner_secs,
+            ))?;
+            if !applied.succeeded() {
+                return Ok(Run {
+                    root: root.to_path_buf(),
+                    verdict: Verdict::CheckBroken(format!(
+                        "reference solution did not run: exit {:?}: {}",
+                        applied.exit_code,
+                        applied.stderr.trim()
+                    )),
+                    check_stdout: applied.stdout,
+                    check_stderr: applied.stderr,
+                });
+            }
+            // Gone before the checker runs, so a check script cannot read the answer
+            // it is supposed to be judging independently. The view would deny it
+            // anyway; this keeps the left-behind run directory honest for inspection.
+            let _ = fs::remove_dir_all(&dst);
         }
-        // Gone before the checker runs, so a check script cannot read the answer it is
-        // supposed to be judging independently. The view would deny it anyway; this
-        // keeps the left-behind run directory honest for inspection too.
-        let _ = fs::remove_dir_all(&dst);
     }
 
     let outcome = backend.run(&Job::new(
@@ -176,6 +236,8 @@ pub struct GateReport {
     pub outcome: GateOutcome,
     pub solution: Run,
     pub empty: Run,
+    /// One entry per named wrong answer, in the order `task.toml` lists them.
+    pub known_bad: Vec<(exercise::KnownBad, Run)>,
     /// Advisory findings. These never reach `outcome`; see `check_run_cmd`.
     pub warnings: Vec<String>,
 }
@@ -186,11 +248,19 @@ impl GateReport {
     /// `warnings` is omitted entirely rather than emitted empty, so an exercise with
     /// no `[workspace]` produces exactly the bytes it did before the advisory run
     /// existed and nothing reading this output has to be taught a new field.
+    ///
+    /// `known_bad_verdicts` is always present, because it is never empty in a
+    /// validated exercise and its absence in a rejected one is itself the finding.
     pub fn json(&self) -> serde_json::Value {
         let mut body = serde_json::json!({
             "outcome": self.outcome,
             "solution_verdict": self.solution.verdict,
             "empty_verdict": self.empty.verdict,
+            "known_bad_verdicts": self
+                .known_bad
+                .iter()
+                .map(|(c, r)| serde_json::json!({ "id": c.id, "verdict": r.verdict }))
+                .collect::<Vec<_>>(),
         });
         if !self.warnings.is_empty() {
             body["warnings"] = serde_json::json!(self.warnings);
@@ -257,7 +327,7 @@ pub fn run_gate(
     fs::create_dir_all(&solution_root).map_err(|e| e.to_string())?;
     fs::create_dir_all(&empty_root).map_err(|e| e.to_string())?;
 
-    let solution = run_once(&frozen, &task, &solution_root, true, backend)?;
+    let solution = run_once(&frozen, &task, &solution_root, Apply::Solution, backend)?;
 
     // Advisory only, and only once the solution run has proved the exercise solvable:
     // a `run_cmd` failure against a workspace that does not even pass says nothing.
@@ -266,7 +336,19 @@ pub fn run_gate(
         warnings.extend(check_run_cmd(&task, &solution_root, backend));
     }
 
-    let empty = run_once(&frozen, &task, &empty_root, false, backend)?;
+    let empty = run_once(&frozen, &task, &empty_root, Apply::Nothing, backend)?;
+
+    // One fresh workspace per candidate. Sharing one would let the first candidate's
+    // files survive into the second, so a trap could spring on residue rather than on
+    // the answer it was written to describe.
+    let mut known_bad = Vec::new();
+    for candidate in &task.known_bad {
+        let root = scratch.join(format!("gate-bad-{}", candidate.id));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+        let run = run_once(&frozen, &task, &root, Apply::KnownBad(candidate), backend)?;
+        known_bad.push((candidate.clone(), run));
+    }
 
     // The snapshot is what ran, but the verdict is written next to the original, and
     // it is the original a learner will sit down to. If the author edited it while the
@@ -274,7 +356,18 @@ pub fn run_gate(
     // digest is trustworthy alone here; only their agreement is.
     let after = crate::digest::exercise_digest(exercise_dir)?;
     let outcome = if before == after {
-        exercise::gate_outcome(&solution.verdict, &empty.verdict, at, &before, backend)
+        let verdicts: Vec<(&exercise::KnownBad, Verdict)> = known_bad
+            .iter()
+            .map(|(c, r)| (c, r.verdict.clone()))
+            .collect();
+        exercise::gate_outcome(
+            &solution.verdict,
+            &empty.verdict,
+            &verdicts,
+            at,
+            &before,
+            backend,
+        )
     } else {
         exercise::GateOutcome::Rejected(exercise::GateFailure::ContentChangedDuringGate {
             before: before.clone(),
@@ -282,7 +375,7 @@ pub fn run_gate(
         })
     };
 
-    Ok(GateReport { outcome, solution, empty, warnings })
+    Ok(GateReport { outcome, solution, empty, known_bad, warnings })
 }
 
 #[cfg(test)]
@@ -328,7 +421,11 @@ mod tests {
                  [verify]\n\
                  cmd = \"sh check/check.sh\"\n\
                  must_pass = [\"correctness\"]\n\
-                 {workspace}"
+                 {workspace}\n\
+                 [[known_bad]]\n\
+                 id = \"always_empty\"\n\
+                 trap = \"leaves the answer file empty\"\n\
+                 files.\"answer.txt\" = \"\"\n"
             ),
         );
         dir
@@ -376,21 +473,28 @@ mod tests {
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     }
 
-    /// An exercise with no `[workspace]` must print what it printed before the
-    /// advisory run existed, byte for byte.
+    /// An exercise with no `[workspace]` must print what it printed before the advisory
+    /// run existed, apart from the fields added since — checked by naming them, so a
+    /// future field cannot slip in unnoticed.
     #[test]
-    fn no_run_cmd_leaves_the_printed_report_byte_identical() {
-        let report = run_gate(&exercise("norun", None), &scratch("norun"), "t", &Backend::select(false).expect("a sandbox")).expect("gate ran");
+    fn the_printed_report_carries_exactly_the_expected_fields() {
+        let report = run_gate(
+            &exercise("norun", None),
+            &scratch("norun"),
+            "t",
+            &Backend::select(false).expect("a sandbox"),
+        )
+        .expect("gate ran");
         assert!(report.warnings.is_empty());
 
-        let before = serde_json::json!({
-            "outcome": report.outcome,
-            "solution_verdict": report.solution.verdict,
-            "empty_verdict": report.empty.verdict,
-        });
+        let body = report.json();
+        let mut keys: Vec<&str> = body.as_object().expect("object").keys().map(|s| s.as_str()).collect();
+        keys.sort_unstable();
         assert_eq!(
-            serde_json::to_string_pretty(&report.json()).expect("serialize"),
-            serde_json::to_string_pretty(&before).expect("serialize"),
+            keys,
+            ["empty_verdict", "known_bad_verdicts", "outcome", "solution_verdict"],
+            "the report grew or lost a field"
         );
+        assert_eq!(body["known_bad_verdicts"][0]["id"], "always_empty");
     }
 }

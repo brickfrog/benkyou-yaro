@@ -136,13 +136,22 @@ a complete and valid graph, with every field and one edge of each type. The tool
 that output from the real types, so it cannot go stale. You start from a worked shape
 and not from the domain of somebody else.
 
-## Three things to know first
+## Four things to know first
 
 **An exercise is not real until the gate runs it twice.** The reference solution must
 pass. The untouched start state must fail. Without the second run, a grader that always
 passes looks correct. Without the first run, an exercise that nobody can solve looks
 correct. `benkyou gate` exits non-zero after a rejection, so a caller cannot show you a
 bad exercise.
+
+**Every exercise must name a wrong answer.** Write it in `task.toml` as `[[known_bad]]`,
+with the mistake it stands for. The gate puts that answer in a fresh workspace and runs
+the grader, which must fail it. One is the minimum, and the gate rejects an exercise
+with none.
+
+This catches the failure the two runs cannot see. One model writes the concept, the
+task, the answer and the tests. If it reads the concept wrongly, all four agree and both
+runs pass. Your own wrong answer is the one part that can disagree.
 
 **A gate result is bound to the files it ran on.** `benkyou gate` writes `.gate.json`
 beside the exercise. It holds a hash of `task.toml`, `instruction.md`, `setup/`,

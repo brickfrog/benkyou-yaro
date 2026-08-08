@@ -286,14 +286,43 @@ and on duplicate keys" teaches; "3/7 failed" does not.
 ### The validation gate
 
 **Non-negotiable, runs at generation time.** A generated exercise is not shown until it
-has been run twice:
+has been run 2 + N times:
 
 1. apply `solution/solve.sh` → correctness must be 1.0, else discard
 2. untouched `setup/` → correctness must be < 1.0, else discard as vacuous
+3. each `[[known_bad]]` candidate → must fail, and must not break the grader
 
-Without both runs you are shipping prose with a test file next to it. For debugging
+Without the first two you are shipping prose with a test file next to it. For debugging
 tasks, additionally record the checks that must *stay* green, so the exercise cannot be
 passed by deleting things.
+
+The third direction answers a question the first two cannot. They compare artifacts
+written by the same model in the same sitting: the concept, the instruction, the
+reference and the checks all share an author, so a misreading is common to all of them
+and both directions pass happily. Reading it back does not help — the reader is the
+writer. Sampling N generations does not help either, because the error is a property of
+the model rather than of the sample; and asking the model to judge its own output is
+worse than useless, since self-preference in rubric-based evaluation survives even
+programmatically verifiable rubrics.
+
+A named wrong answer breaks the symmetry by making the author commit to a prediction
+the machine can test: *this specific answer must fail, for this reason*. Either it does
+and the grader discriminates on something, or it does not and the contradiction is
+arithmetic rather than editorial.
+
+Two details are load-bearing. A candidate is **static file content**, never a command:
+an executable `apply` step would be one more generated script inside the execution
+boundary, and a candidate that can compute is a candidate that can read `check/` on the
+way past. And a candidate that makes the grader *crash* is not counted as caught — a
+grader that cannot parse anything would otherwise score full marks against a whole
+suite of traps.
+
+What this does not buy, stated because it is tempting to think otherwise: it is a
+mutation test for the grader, not evidence the exercise teaches the concept. A model
+wrong about the concept can be consistently wrong across the reference, the checks and
+its own candidates. It also cannot tell whether a candidate failed for the reason named
+or for an unrelated one — a syntax error counts as a catch. Both are why `trap` is prose
+for a human and not a field the tool matches on.
 
 The rule is enforced where it can be bypassed, not where it is convenient: `attempt`,
 `grade` and `serve` all refuse an exercise the gate has not validated. Grading is the

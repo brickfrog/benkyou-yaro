@@ -60,6 +60,7 @@ fn exercise_dir(name: &str, gated: bool, hidden: bool) -> PathBuf {
                 empty_fails: true,
                 validated_at: "test".into(),
                 digest,
+                known_bad_caught: vec!["trap".into()],
                 runner: exercise::Runner::of(&sandbox()),
                 env: exercise::Env::current(),
             },
