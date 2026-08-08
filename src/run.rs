@@ -434,27 +434,101 @@ fn base_args() -> Result<Vec<String>, String> {
     Ok(a)
 }
 
-/// A one-line `/etc/passwd` and `/etc/group`, written once per process.
+/// A one-line `/etc/passwd` and `/etc/group`, bind-mounted over the host's.
+///
+/// One directory per user, reused by every process and every run. The obvious shape
+/// is a per-pid directory, and it leaks: a `LazyLock` static never drops, and a kata
+/// killed by its deadline never reaches an exit hook either, so `/tmp` grows by one
+/// directory per invocation forever. The contents are a pure function of uid and gid,
+/// so sharing is safe and a directory left by an earlier run is already correct.
 static IDENTITY: LazyLock<Result<(PathBuf, PathBuf), String>> = LazyLock::new(|| {
     use std::os::unix::fs::MetadataExt;
     let me = fs::metadata("/proc/self").map_err(|e| format!("/proc/self: {e}"))?;
     let (uid, gid) = (me.uid(), me.gid());
-    let dir = std::env::temp_dir().join(format!("benkyou-box-{}", std::process::id()));
-    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = identity_dir(&std::env::temp_dir(), uid)?;
+    write_identity(&dir, uid, gid)
+});
+
+/// Write the two files, returning their paths.
+///
+/// Split from the directory check above because it is the half with the interesting
+/// failure: the directory being ours does not make every name inside it ours, and
+/// these two files decide what the sandbox resolves for every uid and gid.
+fn write_identity(dir: &Path, uid: u32, gid: u32) -> Result<(PathBuf, PathBuf), String> {
     let passwd = dir.join("passwd");
     let group = dir.join("group");
-    fs::write(
-        &passwd,
-        format!(
-            "root:x:0:0:root:/:/bin/sh\n\
-             box:x:{uid}:{gid}:box:{GUEST_ROOT}/{HOME_DIR}:/bin/sh\n"
+    let body = [
+        (
+            &passwd,
+            format!(
+                "root:x:0:0:root:/:/bin/sh\n\
+                 box:x:{uid}:{gid}:box:{GUEST_ROOT}/{HOME_DIR}:/bin/sh\n"
+            ),
         ),
-    )
-    .map_err(|e| format!("{}: {e}", passwd.display()))?;
-    fs::write(&group, format!("root:x:0:\nbox:x:{gid}:\n"))
-        .map_err(|e| format!("{}: {e}", group.display()))?;
+        (&group, format!("root:x:0:\nbox:x:{gid}:\n")),
+    ];
+    // Staged under a per-pid name and renamed, so two runs starting at once cannot
+    // have one read a file the other is halfway through writing.
+    for (path, text) in body {
+        let staging = dir.join(format!(
+            "{}.{}",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("f"),
+            std::process::id()
+        ));
+        write_new(&staging, &text)?;
+        fs::rename(&staging, path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
     Ok((passwd, group))
-});
+}
+
+/// Create `path` and write `text`, refusing to write through anything already there.
+///
+/// `fs::write` opens with `O_TRUNC` and follows symlinks, so a link sitting at this
+/// name would send the write to its target. `create_new` is `O_EXCL`: it fails on any
+/// existing name, link or not. A staging file that already exists is the debris of a
+/// crashed run whose pid has been reused, which is expected rather than hostile, so
+/// it is unlinked once and retried - unlinking removes the link itself, never what it
+/// points at, which is exactly the property `fs::write` lacks.
+fn write_new(path: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let attempt = || -> std::io::Result<()> {
+        let mut f = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+        f.write_all(text.as_bytes())
+    };
+    match attempt() {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            attempt().map_err(|e| format!("{}: {e}", path.display()))
+        }
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// Create or adopt this user's identity directory under `base`.
+///
+/// A shared path in a world-writable directory has to be checked before it is
+/// trusted: the two files written here become `/etc/passwd` and `/etc/group` inside
+/// the sandbox, so whoever owns the directory chooses what a run sees for every name
+/// lookup. A symlink is refused rather than followed, for the same reason
+/// `safe_join` refuses one.
+fn identity_dir(base: &Path, uid: u32) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let dir = base.join(format!("benkyou-box-{uid}"));
+    // `create_dir_all` is content with an existing symlink to a directory, so the
+    // check below is what decides, not this call.
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let md = fs::symlink_metadata(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if md.file_type().is_symlink() || !md.is_dir() {
+        return Err(format!("{}: not a directory", dir.display()));
+    }
+    if md.uid() != uid {
+        return Err(format!("{}: owned by uid {}, not {uid}", dir.display(), md.uid()));
+    }
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir)
+}
 
 fn identity_files() -> Result<&'static (PathBuf, PathBuf), String> {
     IDENTITY.as_ref().map_err(|e| e.clone())
@@ -640,5 +714,115 @@ pub struct Outcome {
 impl Outcome {
     pub fn succeeded(&self) -> bool {
         !self.timed_out && self.exit_code == Some(0)
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::{identity_dir, write_identity};
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("bk-ident-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// The property the per-pid version failed: repeated calls converge on one
+    /// directory instead of leaving one behind per invocation.
+    #[test]
+    fn repeated_calls_reuse_one_directory() {
+        let base = scratch("reuse");
+        let uid = fs::metadata("/proc/self").unwrap().uid();
+        let first = identity_dir(&base, uid).expect("first call");
+        fs::write(first.join("passwd"), "x").unwrap();
+        for _ in 0..5 {
+            assert_eq!(identity_dir(&base, uid).expect("later call"), first);
+        }
+        let dirs: Vec<_> = fs::read_dir(&base).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(dirs.len(), 1, "left behind: {dirs:?}");
+        // Adopting is not erasing: a run must not lose the files a sibling wrote.
+        assert_eq!(fs::read_to_string(first.join("passwd")).unwrap(), "x");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// These files become `/etc/passwd` and `/etc/group` in the sandbox, so a symlink
+    /// planted at the path must be refused, never followed.
+    #[test]
+    fn a_symlink_is_refused() {
+        let base = scratch("symlink");
+        let uid = fs::metadata("/proc/self").unwrap().uid();
+        let target = base.join("elsewhere");
+        fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, base.join(format!("benkyou-box-{uid}"))).unwrap();
+        let err = identity_dir(&base, uid).expect_err("a symlink must not be adopted");
+        assert!(err.contains("not a directory"), "{err}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// `fs::write` follows a symlink and truncates its target, so a link planted at
+    /// the staging name would redirect the write out of the directory entirely. The
+    /// link must be replaced, and whatever it pointed at must be untouched.
+    #[test]
+    fn a_symlink_at_the_staging_name_is_not_written_through() {
+        let base = scratch("staging");
+        let dir = base.join("box");
+        fs::create_dir_all(&dir).unwrap();
+        let canary = base.join("canary");
+        fs::write(&canary, "untouched").unwrap();
+        for name in ["passwd", "group"] {
+            let staging = dir.join(format!("{name}.{}", std::process::id()));
+            std::os::unix::fs::symlink(&canary, &staging).unwrap();
+        }
+
+        let (passwd, group) = write_identity(&dir, 1000, 1000).expect("write");
+
+        assert_eq!(
+            fs::read_to_string(&canary).unwrap(),
+            "untouched",
+            "the write followed the symlink out of the directory"
+        );
+        assert!(fs::read_to_string(&passwd).unwrap().contains("box:x:1000:1000"));
+        assert!(fs::read_to_string(&group).unwrap().contains("box:x:1000:"));
+        assert!(!fs::symlink_metadata(&passwd).unwrap().file_type().is_symlink());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Debris from a crashed run whose pid has been reused is expected, not hostile:
+    /// the next run must clear it rather than refuse to start.
+    #[test]
+    fn a_stale_staging_file_does_not_wedge_the_next_run() {
+        let base = scratch("stale");
+        let dir = base.join("box");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("passwd.{}", std::process::id())), "junk").unwrap();
+
+        let (passwd, _) = write_identity(&dir, 1000, 1000).expect("stale debris must clear");
+
+        assert!(fs::read_to_string(&passwd).unwrap().contains("box:x:1000:1000"));
+        let left: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains('.'))
+            .collect();
+        assert!(left.is_empty(), "staging files left behind: {left:?}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Readable by anyone would mean any other account on the machine can see, and
+    /// race, the identity a run is about to mount.
+    #[test]
+    fn the_directory_is_private() {
+        let base = scratch("mode");
+        let uid = fs::metadata("/proc/self").unwrap().uid();
+        let dir = base.join(format!("benkyou-box-{uid}"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+        let got = identity_dir(&base, uid).expect("an owned directory is adopted");
+        let mode = fs::metadata(&got).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "left world-readable: {mode:o}");
+        let _ = fs::remove_dir_all(&base);
     }
 }
