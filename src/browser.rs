@@ -52,13 +52,10 @@ impl Item {
         let task = exercise::load(dir)?;
         // The same predicate `attempt::open` uses, not a weaker `gate.is_some()`: a
         // `[gate]` table can exist and record a failure, and accepting it here would
-        // let the session start and then strand the learner when open() refuses.
-        if !task.is_validated() {
-            return Err(format!(
-                "{}: not validated — run `benkyou gate` on it first",
-                dir.display()
-            ));
-        }
+        // let the session start and then strand the learner when open() refuses. The
+        // digest half matters more in a queue than anywhere else - a session composed
+        // from six directories is six chances for one of them to have moved.
+        exercise::require_current(dir)?;
         let slug = dir
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -217,7 +214,7 @@ impl App {
         let work = item.work();
         if !dir_has_files(&work) {
             std::fs::create_dir_all(&item.root).map_err(|e| e.to_string())?;
-            attempt::open(&item.dir, &item.task, &item.root)?;
+            attempt::open(&item.dir, &item.root)?;
         }
 
         {
@@ -577,35 +574,89 @@ mod tests {
     /// A session must refuse everything unshowable at startup. Refusing late strands
     /// the learner mid-queue, which is the whole reason this check is duplicated
     /// from `attempt::open`.
+    ///
+    /// The three cases are the three distinct ways an exercise can fail to be
+    /// showable, and they are kept apart because a single "refused" assertion passes
+    /// for the wrong reason: everything is refused when nothing is gated.
     #[test]
     fn a_session_refuses_anything_the_gate_did_not_validate() {
         const BASE: &str = "schema_version = \"1\"\n\
              [task]\nid = \"t\"\nconcept_id = \"c\"\nkind = \"kata\"\nguidance_level = \"blank\"\n\
              [verify]\ncmd = \"sh check/check.sh\"\nmust_pass = [\"correctness\"]\n";
-        // A `[gate]` table that exists and records a FAILURE is the case a bare
-        // `gate.is_some()` would wave through.
-        let cases = [
-            ("no gate table", String::from(BASE)),
+
+        let gate = |solution_passes, empty_fails, digest: &str| exercise::Gate {
+            solution_passes,
+            empty_fails,
+            validated_at: "x".into(),
+            digest: digest.into(),
+            env: exercise::Env::current(),
+        };
+
+        // (name, record to write, the phrase the refusal must carry)
+        let cases: [(&str, Option<Box<dyn Fn(&str) -> exercise::Gate>>, &str); 4] = [
+            ("no gate record at all", None, "not validated"),
             (
-                "gate recorded a failure",
-                format!("{BASE}[gate]\nsolution_passes = false\nempty_fails = false\nvalidated_at = \"x\"\n"),
+                "the gate recorded a rejection",
+                Some(Box::new(move |_| gate(false, false, "x"))),
+                "rejected this exercise",
             ),
             (
                 "solution passed but the empty stub also passed",
-                format!("{BASE}[gate]\nsolution_passes = true\nempty_fails = false\nvalidated_at = \"x\"\n"),
+                Some(Box::new(move |_| gate(true, false, "x"))),
+                "rejected this exercise",
+            ),
+            (
+                "validated, then the exercise was edited",
+                Some(Box::new(move |_| gate(true, true, "deadbeefdeadbeef"))),
+                "changed since it was gated",
             ),
         ];
-        for (name, toml) in cases {
-            let dir = std::env::temp_dir()
-                .join(format!("bk-browser-{}-{}", std::process::id(), name.len()));
+
+        for (i, (name, record, expected)) in cases.into_iter().enumerate() {
+            let dir =
+                std::env::temp_dir().join(format!("bk-browser-{}-{i}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("task.toml"), toml).unwrap();
+            std::fs::write(dir.join("task.toml"), BASE).unwrap();
+            if let Some(build) = record {
+                exercise::write_gate(&dir, &build("")).unwrap();
+            }
             match Item::load(&dir) {
-                Ok(_) => panic!("accepted an exercise with {name}"),
-                Err(e) => assert!(e.contains("not validated"), "{name}: {e}"),
+                Ok(_) => panic!("accepted an exercise where {name}"),
+                Err(e) => assert!(e.contains(expected), "{name}: wanted {expected:?}, got {e}"),
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// The positive half of the check above: a record whose digest matches is
+    /// accepted. Without this, every assertion in that test is satisfied by a
+    /// `load` that refuses unconditionally.
+    #[test]
+    fn a_matching_digest_is_accepted() {
+        let dir = std::env::temp_dir().join(format!("bk-browser-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("task.toml"),
+            "schema_version = \"1\"\n\
+             [task]\nid = \"t\"\nconcept_id = \"c\"\nkind = \"kata\"\nguidance_level = \"blank\"\n\
+             [verify]\ncmd = \"sh check/check.sh\"\nmust_pass = [\"correctness\"]\n",
+        )
+        .unwrap();
+        let digest = crate::digest::exercise_digest(&dir).unwrap();
+        exercise::write_gate(
+            &dir,
+            &exercise::Gate {
+                solution_passes: true,
+                empty_fails: true,
+                validated_at: "x".into(),
+                digest,
+                env: exercise::Env::current(),
+            },
+        )
+        .unwrap();
+        Item::load(&dir).expect("a current gate record must be accepted");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

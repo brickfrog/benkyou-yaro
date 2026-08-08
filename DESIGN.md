@@ -295,11 +295,32 @@ Without both runs you are shipping prose with a test file next to it. For debugg
 tasks, additionally record the checks that must *stay* green, so the exercise cannot be
 passed by deleting things.
 
-The rule is enforced where it can be bypassed, not where it is convenient: both
-`attempt::open` and `attempt::grade` refuse an exercise whose `[gate]` block is
-absent, and `benkyou gate` writes that block into `task.toml` on success. Grading is
-the stricter of the two doors — a grader nobody proved discriminating would still
-write a score into the learner's fluency, where it decides what they see next.
+The rule is enforced where it can be bypassed, not where it is convenient: `attempt`,
+`grade` and `serve` all refuse an exercise the gate has not validated. Grading is the
+stricter of the three doors — a grader nobody proved discriminating would still write a
+score into the learner's fluency, where it decides what they see next.
+
+A verdict has to be bound to what it was a verdict *about*, or it outlives its subject:
+edit a hidden case after gating and the exercise stays showable on the strength of a run
+that no longer describes it. So `.gate.json` carries a SHA-256 over `task.toml`,
+`instruction.md`, `setup/`, `check/` and `solution/`, and every door re-derives it. The
+digest is taken before the runs and again after; disagreement rejects the exercise
+rather than certifying bytes that were never executed.
+
+It is a sidecar rather than a `[gate]` block inside `task.toml` for one reason that
+decides the rest: a tool that writes into the file it is hashing cannot hash it exactly,
+and would have to argue about which differences count. Nothing writes to the authored
+files, so they are hashed byte for byte — comments, formatting, and sections this binary
+does not yet parse included. Gating became non-destructive as a side effect, which also
+ended a real bug: reserialising `task.toml` had been silently deleting any table the
+`Task` struct did not declare.
+
+What the digest cannot see is the environment. An interpreter or a package that moved
+underneath an exercise changes its behaviour without changing a byte of it, and that
+closure is not enumerable from the directory — so the record keeps a fingerprint
+(binary version, OS, architecture) as *evidence*, warns when it differs, and never gates
+on it. Real environment drift surfaces as a failing grade. This is a gap, not a
+guarantee.
 
 ### Doing one
 

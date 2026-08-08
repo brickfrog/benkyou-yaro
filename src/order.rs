@@ -603,7 +603,10 @@ mod tests {
         assert_eq!(task.task.kind, crate::exercise::Kind::Kata);
         assert_eq!(task.verify.must_pass, ["correctness"]);
         assert_eq!(task.limits.learner_secs, 600, "the template's limits, not the defaults");
-        assert!(!task.is_validated(), "a template arrives ungated");
+        assert!(
+            crate::exercise::read_gate(&dir).expect("read gate").is_none(),
+            "a template arrives ungated"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

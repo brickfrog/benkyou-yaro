@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use benkyou::assess::{self, AssessConfig, RecordOutcome, Step};
-use benkyou::exercise::{self, Gate, GateOutcome, Task};
+use benkyou::exercise::{self, GateOutcome, Task};
 use benkyou::gate::run_gate;
 use benkyou::graph::{
     Edge, EdgeType, Goal, Graph, Kind, Node, Provenance, State, Verdict, NODE_CAP, RELEVANCE_FLOOR,
@@ -96,12 +96,15 @@ USAGE
 
   benkyou gate <exercise-dir> [--scratch DIR]
       Run the validation gate: the reference solution must pass and the untouched
-      starting state must fail. Records the result in task.toml, which is what
-      makes the exercise showable. Exits non-zero if the exercise is rejected.
+      starting state must fail. Records the result in `.gate.json` beside the
+      exercise, which is what makes it showable; your own files are not touched.
+      The record is bound to a hash of the exercise, so any later edit ungates it
+      until you run this again. Exits non-zero if the exercise is rejected.
 
   benkyou attempt <exercise-dir> [--work <dir>]
       Materialise a workspace and sit down to the exercise. Refuses anything the
-      gate has not validated, and copies only setup/ — never the solution.
+      gate has not validated or that changed since, and copies only setup/ —
+      never the solution.
 
   benkyou serve <exercise-dir>... [--goal <goal>] [--port N] [--no-open]
       Sit down to a queue of exercises in a browser instead of an editor. Serves a
@@ -145,6 +148,18 @@ fn main() -> ExitCode {
             eprintln!("benkyou: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Print advisory notes about an exercise's gate record to stderr.
+///
+/// stderr, not the JSON body: every command here prints machine-readable output on
+/// success, and a caller parsing that must not have to learn a new field to stay
+/// working. Advisory means advisory - nothing here can stop the command, mirroring the
+/// gate's own split between an outcome and its warnings.
+fn warn_drift(dir: &std::path::Path) {
+    for note in exercise::gate_warnings(dir) {
+        eprintln!("benkyou: {}: {note}", dir.display());
     }
 }
 
@@ -691,19 +706,14 @@ fn run(args: &[String]) -> Result<String, String> {
             let body = report.json();
             let text = json(&body)?;
             match report.outcome {
-                GateOutcome::Validated(_) => {
+                GateOutcome::Validated(gate) => {
                     // Persist it. An exercise is showable *because* the gate has run,
                     // and `attempt` has no other way to know that it did.
-                    let mut task = exercise::load(&dir)?;
-                    task.gate = Some(Gate {
-                        solution_passes: true,
-                        empty_fails: true,
-                        validated_at: at,
-                    });
-                    let path = dir.join("task.toml");
-                    let rewritten = toml::to_string_pretty(&task).map_err(|e| e.to_string())?;
-                    std::fs::write(&path, rewritten)
-                        .map_err(|e| format!("{}: {e}", path.display()))?;
+                    //
+                    // Into a sidecar, never into `task.toml`: the digest inside this
+                    // record covers the authored files byte for byte, which is only
+                    // possible while the tool never writes to them.
+                    exercise::write_gate(&dir, &gate)?;
                     Ok(text)
                 }
                 // A rejected exercise is a failure of the command, not a report:
@@ -720,7 +730,8 @@ fn run(args: &[String]) -> Result<String, String> {
             let task = exercise::load(&dir)?;
             let root = work_root(args, &dir, &task)?;
             std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-            let work = benkyou::attempt::open(&dir, &task, &root)?;
+            warn_drift(&dir);
+            let work = benkyou::attempt::open(&dir, &root)?;
             json(&serde_json::json!({
                 "workspace": work,
                 "concept": task.task.concept_id,
@@ -739,6 +750,7 @@ fn run(args: &[String]) -> Result<String, String> {
             if dirs.is_empty() {
                 return Err("serve: name at least one exercise directory".into());
             }
+            dirs.iter().for_each(|d| warn_drift(d));
             let items = dirs
                 .iter()
                 .map(|d| benkyou::browser::Item::load(d))
@@ -775,6 +787,7 @@ fn run(args: &[String]) -> Result<String, String> {
             let dir = need(0, "exercise-dir")?;
             let task = exercise::load(&dir)?;
             let root = work_root(args, &dir, &task)?;
+            warn_drift(&dir);
             let attempt = benkyou::attempt::grade(&dir, &task, &root)?;
             let score = benkyou::attempt::practice_score(&attempt.verdict);
 

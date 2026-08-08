@@ -38,19 +38,15 @@ pub struct Attempt {
 /// which this tool deliberately does not have. Confidentiality here is a convenience
 /// against stumbling onto the answer, never a defence against going to look for it.
 ///
-/// Refuses an exercise the gate has not validated. That rule is the whole
-/// difference between an exercise and a model's guess at one, so it lives here
-/// rather than in the CLI, where only one caller would honour it.
+/// Refuses an exercise the gate has not validated, and one edited since it was.
+/// That rule is the whole difference between an exercise and a model's guess at
+/// one, so it lives here rather than in the CLI, where only one caller would
+/// honour it.
 ///
 /// Refuses a workspace that already holds files rather than overwriting one — the
 /// thing at risk here is unsaved work.
-pub fn open(exercise_dir: &Path, task: &Task, root: &Path) -> Result<PathBuf, String> {
-    if !task.is_validated() {
-        return Err(format!(
-            "{}: not validated — run `benkyou gate` on it first",
-            exercise_dir.display()
-        ));
-    }
+pub fn open(exercise_dir: &Path, root: &Path) -> Result<PathBuf, String> {
+    exercise::require_current(exercise_dir)?;
     let work = root.join(WORK);
     let occupied = fs::read_dir(&work)
         .map(|mut d| d.next().is_some())
@@ -75,16 +71,11 @@ pub fn open(exercise_dir: &Path, task: &Task, root: &Path) -> Result<PathBuf, St
 ///
 /// Either way `work/` is the one directory never written to.
 ///
-/// Refuses an ungated exercise for the same reason [`open`] does, and with more at
-/// stake: a grader nobody proved discriminating would still write a score into the
-/// learner's fluency, where it decides what they are shown next.
+/// Refuses an ungated or edited exercise for the same reason [`open`] does, and with
+/// more at stake: a grader nobody proved discriminating would still write a score into
+/// the learner's fluency, where it decides what they are shown next.
 pub fn grade(exercise_dir: &Path, task: &Task, root: &Path) -> Result<Attempt, String> {
-    if !task.is_validated() {
-        return Err(format!(
-            "{}: not validated — run `benkyou gate` on it first",
-            exercise_dir.display()
-        ));
-    }
+    exercise::require_current(exercise_dir)?;
     let work = root.join(WORK);
     if !work.exists() {
         return Err(format!("{}: no workspace here yet", work.display()));

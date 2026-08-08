@@ -242,9 +242,19 @@ one for one.
 `write.path` is a suggestion, relative to wherever the exercise library lives. If you are
 not working inside a checkout, put the directory anywhere and pass `gate`, `attempt` and
 `grade` an absolute path. **Gate the copy the learner will actually sit**: `attempt`
-refuses a directory with no `[gate]` block, so an exercise gated only in `/tmp` can never
-be attempted. The copy-to-`/tmp` rule below is for the throwaway discrimination runs, and
-for shared fixtures and templates that must not acquire a `[gate]` block of their own.
+refuses a directory with no `.gate.json` beside it, so an exercise gated only in `/tmp`
+can never be attempted.
+
+Gating writes `.gate.json` and touches nothing else, so gating a shared fixture in place
+is safe now — the authored files come back byte for byte. What it does leave behind is a
+derived file; delete it or ignore it in version control rather than committing a verdict
+earned on someone else's machine.
+
+**A gate verdict is bound to the exact bytes it ran against.** `.gate.json` carries a
+SHA-256 over `task.toml`, `instruction.md`, `setup/`, `check/` and `solution/`. Edit any
+of them - even to fix a typo in the prose - and `attempt`, `grade` and `serve` all refuse
+with `changed since it was gated` until you re-run the gate. Do not hand-write or copy a
+`.gate.json`; the digest will not match and the refusal is the point.
 
 **The gate is necessary and nowhere near sufficient.** `benkyou gate` proves only that
 the reference passes and an empty stub fails. That bar is low enough to be met by an
@@ -320,8 +330,9 @@ Other rules that cost real debugging:
   learner's typo silently costs them the record of having tried.
 - Ties in the expected output must be broken by a stated rule, or the exercise is
   nondeterministic and will fail correct answers at random.
-- Never gate a shared fixture or a template in place — gating writes a `[gate]` block
-  into `task.toml`. Copy to `/tmp` and gate the copy.
+- Gating is non-destructive: it writes `.gate.json` and leaves the authored files
+  byte-identical. Re-gate after every edit, however small — the verdict is bound to
+  the content, and a stale one refuses rather than lies.
 
 ## Judging free-text answers
 

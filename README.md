@@ -139,6 +139,12 @@ passes looks correct. Without the first run, an exercise that nobody can solve l
 correct. `benkyou gate` exits non-zero after a rejection, so a caller cannot show you a
 bad exercise.
 
+**A gate result is bound to the files it ran on.** `benkyou gate` writes `.gate.json`
+beside the exercise. It holds a hash of `task.toml`, `instruction.md`, `setup/`,
+`check/` and `solution/`. Change any of them and `attempt`, `grade` and `serve` refuse
+the exercise until you gate it again. The gate writes nothing else, so your own files
+come back unchanged.
+
 **Note identity comes from the concept and the role, and never from the card text.**
 Content-hashed GUIDs are the usual default, and they are wrong here. This tool projects
 a graph again after each edit. An edited concept therefore writes its cards again. A

@@ -178,6 +178,9 @@ fn check_run_cmd(task: &Task, solution_root: &Path) -> Option<String> {
 /// two runs get their own subdirectories under it and are left in place for
 /// inspection.
 pub fn run_gate(exercise_dir: &Path, scratch: &Path, at: &str) -> Result<GateReport, String> {
+    // Taken before anything is read or run. This is the claim the verdict is about:
+    // the bytes the two runs are going to execute.
+    let before = crate::digest::exercise_digest(exercise_dir)?;
     let task = exercise::load(exercise_dir)?;
 
     let solution_root = scratch.join("gate-solution");
@@ -198,7 +201,21 @@ pub fn run_gate(exercise_dir: &Path, scratch: &Path, at: &str) -> Result<GateRep
 
     let empty = run_once(exercise_dir, &task, &empty_root, false)?;
 
-    let outcome = exercise::gate_outcome(&solution.verdict, &empty.verdict, at);
+    // The exercise must not have moved underneath its own gate. An editor left open
+    // during a slow gate, or a check script that writes back into the directory it was
+    // copied from, would otherwise be certified on bytes that were never run - and the
+    // digest stamped afterwards would make that undetectable ever after. Neither
+    // digest is trustworthy on its own here; only their agreement is.
+    let after = crate::digest::exercise_digest(exercise_dir)?;
+    let outcome = if before == after {
+        exercise::gate_outcome(&solution.verdict, &empty.verdict, at, &before)
+    } else {
+        exercise::GateOutcome::Rejected(exercise::GateFailure::ContentChangedDuringGate {
+            before: before.clone(),
+            after,
+        })
+    };
+
     Ok(GateReport { outcome, solution, empty, warnings })
 }
 

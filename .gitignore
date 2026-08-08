@@ -1,2 +1,6 @@
 /target
 /choir-out
+
+# Gate verdicts are local evidence: earned on this machine, against these bytes,
+# by this binary. Committing one ships a stamp nobody else can check.
+.gate.json
