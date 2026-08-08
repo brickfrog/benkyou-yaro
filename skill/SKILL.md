@@ -30,7 +30,7 @@ Every command below is the `benkyou` binary. Check it is there before planning a
 around it:
 
 ```sh
-benkyou --help || cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.1.1
+benkyou --help || cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.2.0
 benkyou --version                            # this file documents benkyou 0.1.x
 ```
 
