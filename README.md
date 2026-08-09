@@ -71,7 +71,7 @@ permissions, over your whole filesystem. Read a generated `check/check.sh` and
 
 ```sh
 cargo build --release   # target/release/benkyou
-cargo test              # 336 tests
+cargo test              # 338 tests
 ```
 
 ## Use it from a chat agent
@@ -93,9 +93,9 @@ come from the same generation, so get them as a pair.
 Pinned to a release:
 
 ```sh
-cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.3.0
+cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.4.0
 mkdir -p ~/.claude/skills/benkyou
-curl -sfL https://raw.githubusercontent.com/brickfrog/benkyou-yaro/v0.3.0/skill/SKILL.md \
+curl -sfL https://raw.githubusercontent.com/brickfrog/benkyou-yaro/v0.4.0/skill/SKILL.md \
   -o ~/.claude/skills/benkyou/SKILL.md
 ```
 

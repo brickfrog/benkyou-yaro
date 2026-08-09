@@ -159,6 +159,14 @@ almost nobody implements it.
 - `inner_fringe(known) = { n ∈ known : known \ {n} is still downward-closed }`
 - plan = topological order over `reachable(goal) \ closure(known)`, cheapest first within
   a level, truncated at the hour budget
+- everything removed is returned whole. The cycle rule above is the strict version —
+  refuse and report — but the mechanical repairs do delete, in place, into a file with
+  no backup. What makes that acceptable is that the report is a complete copy of what
+  went: dropped nodes come back with their probe, goals, cost and provenance, not as
+  bare ids, so the rewrite is reversible by hand. An id-only report was the original
+  shape and it was the wrong one — it told the author the name of what they had lost
+  while destroying the part that cost something to write. The one gap is keys the
+  schema does not define: serde discards those at parse time, before any of this runs
 
 ---
 

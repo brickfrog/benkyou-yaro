@@ -150,18 +150,29 @@ pub struct Graph {
 
 /// What [`Graph::validate`] changed. Reported to the user: a generated graph that
 /// needed heavy repair is a graph to regenerate.
+///
+/// **Everything removed comes back whole.** `validate` rewrites the goal file in
+/// place and there is no backup, so the report is the only copy of what it took. An
+/// id is not enough to rebuild a node from: `title`, `probe`, `goals`,
+/// `cost_minutes` and `provenance` are the parts that cost something to produce, and
+/// a report naming only the id tells the author what they lost without letting them
+/// put it back. Printing the whole node makes the rewrite reversible by hand, which
+/// is the same reason step 5 restores the edges it walked.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ValidationReport {
     /// `requires` cycles found, each as the edges that form it. Reported, never cut:
     /// the tool cannot tell which edge of a cycle is the wrong one, and guessing
     /// silently rewrote correct curricula. The author resolves it and re-runs.
     pub cycles: Vec<Vec<Edge>>,
-    /// Duplicate node ids collapsed onto the first occurrence.
-    pub duplicate_nodes: Vec<NodeId>,
-    /// Nodes dropped for `relevance` below the threshold.
-    pub dropped_irrelevant: Vec<NodeId>,
-    /// Nodes dropped because the node cap was hit, least relevant first.
-    pub dropped_over_cap: Vec<NodeId>,
+    /// Duplicate node ids collapsed onto the first occurrence. The losing node is
+    /// returned whole: only its `id` was a duplicate, and the rest of it may be the
+    /// version worth keeping.
+    pub duplicate_nodes: Vec<Node>,
+    /// Nodes dropped for `relevance` below the threshold, returned whole.
+    pub dropped_irrelevant: Vec<Node>,
+    /// Nodes dropped because the node cap was hit, least relevant first, returned
+    /// whole.
+    pub dropped_over_cap: Vec<Node>,
     /// Edges dropped because an endpoint no longer exists.
     pub dangling_edges: Vec<Edge>,
 }
@@ -203,7 +214,7 @@ impl Graph {
             if seen.insert(n.id.clone()) {
                 kept.push(n);
             } else {
-                report.duplicate_nodes.push(n.id);
+                report.duplicate_nodes.push(n);
             }
         }
         self.nodes = kept;
@@ -213,7 +224,7 @@ impl Graph {
         let mut kept: Vec<Node> = Vec::with_capacity(self.nodes.len());
         for n in std::mem::take(&mut self.nodes) {
             if n.relevance < floor {
-                report.dropped_irrelevant.push(n.id);
+                report.dropped_irrelevant.push(n);
             } else {
                 kept.push(n);
             }
@@ -234,18 +245,19 @@ impl Graph {
                     .then_with(|| a.1.cmp(&b.1))
                     .then_with(|| a.0.cmp(&b.0))
             });
-            let doomed: BTreeSet<usize> = order.iter().take(excess).map(|(i, _, _)| *i).collect();
-            report.dropped_over_cap = order
+            // Taken out by sorted position, so the report stays least-relevant-first
+            // while the survivors keep the order the author wrote them in.
+            let mut slots: Vec<Option<Node>> = std::mem::take(&mut self.nodes)
                 .into_iter()
-                .take(excess)
-                .map(|(_, id, _)| id)
+                .map(Some)
                 .collect();
-            let mut position = 0usize;
-            self.nodes.retain(|_| {
-                let keep = !doomed.contains(&position);
-                position += 1;
-                keep
-            });
+            report.dropped_over_cap = order
+                .iter()
+                .take(excess)
+                .filter_map(|(i, _, _)| slots[*i].take())
+                .collect();
+
+            self.nodes = slots.into_iter().flatten().collect();
         }
 
         // 4. edges left dangling by steps 1-3, plus self-loops of every type.
@@ -651,6 +663,12 @@ mod tests {
 
     fn node_ids(g: &Graph) -> Vec<NodeId> {
         g.nodes.iter().map(|n| n.id.clone()).collect()
+    }
+
+    /// Ids out of a slice of dropped nodes, for the assertions that are about which
+    /// nodes went and in what order rather than about what came back with them.
+    fn dropped(nodes: &[Node]) -> Vec<NodeId> {
+        nodes.iter().map(|n| n.id.clone()).collect()
     }
 
     /// `a -> b`, `a -> c`, `b -> d`, `c -> d`.
@@ -1252,8 +1270,8 @@ mod tests {
             vec![req("a", "b")],
         );
         let report = g.validate(0.3, 150);
-        assert_eq!(report.duplicate_nodes, ids(&["a"]));
-        assert_eq!(report.dropped_irrelevant, ids(&[]));
+        assert_eq!(dropped(&report.duplicate_nodes), ids(&["a"]));
+        assert_eq!(dropped(&report.dropped_irrelevant), ids(&[]));
         assert_eq!(report.dangling_edges, Vec::new());
         assert_eq!(node_ids(&g), ids(&["a", "b"]));
         assert_eq!(g.node("a").map(|n| n.cost_minutes), Some(10));
@@ -1274,8 +1292,8 @@ mod tests {
         );
         let report = g.validate(0.3, 150);
         // 0.3 is not below 0.3; a negative relevance is.
-        assert_eq!(report.dropped_irrelevant, ids(&["b", "d"]));
-        assert_eq!(report.dropped_over_cap, ids(&[]));
+        assert_eq!(dropped(&report.dropped_irrelevant), ids(&["b", "d"]));
+        assert_eq!(dropped(&report.dropped_over_cap), ids(&[]));
         assert_eq!(node_ids(&g), ids(&["a", "c"]));
     }
 
@@ -1299,9 +1317,9 @@ mod tests {
             vec![req("a", "b"), req("a", "c")],
         );
         let report = g.validate(0.3, 2);
-        assert_eq!(report.dropped_irrelevant, ids(&[]));
+        assert_eq!(dropped(&report.dropped_irrelevant), ids(&[]));
         // least relevant first
-        assert_eq!(report.dropped_over_cap, ids(&["d", "c"]));
+        assert_eq!(dropped(&report.dropped_over_cap), ids(&["d", "c"]));
         assert_eq!(node_ids(&g), ids(&["a", "b"]));
         // dropping `c` in step 3 is what makes `a -> c` dangling in step 4
         assert_eq!(report.dangling_edges, vec![req("a", "c")]);
@@ -1508,7 +1526,7 @@ mod tests {
             ],
         );
         let report = g.validate(0.3, 150);
-        assert_eq!(report.dropped_irrelevant, ids(&["b"]));
+        assert_eq!(dropped(&report.dropped_irrelevant), ids(&["b"]));
         assert_eq!(
             report.dangling_edges,
             vec![
@@ -1540,9 +1558,9 @@ mod tests {
             ],
         );
         let report = g.validate(0.3, 150);
-        assert_eq!(report.duplicate_nodes, ids(&["a"]));
-        assert_eq!(report.dropped_irrelevant, ids(&["junk"]));
-        assert_eq!(report.dropped_over_cap, ids(&[]));
+        assert_eq!(dropped(&report.duplicate_nodes), ids(&["a"]));
+        assert_eq!(dropped(&report.dropped_irrelevant), ids(&["junk"]));
+        assert_eq!(dropped(&report.dropped_over_cap), ids(&[]));
         assert_eq!(
             report.dangling_edges,
             vec![req("junk", "b"), req("b", "b")]
@@ -1598,9 +1616,9 @@ mod tests {
         let second_report = second.validate(0.3, 150);
 
         // z is unambiguously below the floor; a and b are unambiguously above it.
-        assert!(first_report.dropped_irrelevant.contains(&"z".to_string()));
-        assert!(!first_report.dropped_irrelevant.contains(&"a".to_string()));
-        assert!(!first_report.dropped_irrelevant.contains(&"b".to_string()));
+        assert!(dropped(&first_report.dropped_irrelevant).contains(&"z".to_string()));
+        assert!(!dropped(&first_report.dropped_irrelevant).contains(&"a".to_string()));
+        assert!(!dropped(&first_report.dropped_irrelevant).contains(&"b".to_string()));
         assert!(first.contains("a") && first.contains("b"));
         assert_eq!(first.edges, vec![req("a", "b")]);
         assert_eq!(first.requires_ancestors("b"), set(&["a"]));
@@ -1629,7 +1647,7 @@ mod tests {
         let first_report = first.validate(0.3, 3);
         assert_eq!(first.nodes.len(), 3, "the cap is a hard ceiling");
         assert_eq!(first_report.dropped_over_cap.len(), 3);
-        assert_eq!(first_report.dropped_irrelevant, ids(&[]));
+        assert_eq!(dropped(&first_report.dropped_irrelevant), ids(&[]));
 
         let mut second = build();
         let second_report = second.validate(0.3, 3);

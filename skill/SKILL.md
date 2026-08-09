@@ -30,8 +30,8 @@ Every command below is the `benkyou` binary. Check it is there before planning a
 around it:
 
 ```sh
-benkyou --help || cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.3.0
-benkyou --version                            # this file documents benkyou 0.3.x
+benkyou --help || cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.4.0
+benkyou --version                            # this file documents benkyou 0.4.x
 ```
 
 This file travels on its own, so do not assume a checkout is nearby — `--git` works from
@@ -87,8 +87,13 @@ curriculum. Remove one edge per reported cycle and run it again.
 
 A cycle does not make the run a no-op. The mechanical repairs still apply and the file
 is still rewritten, so a graph carrying both a cycle and a sub-floor node loses the node
-on the same run that refuses the cycle. Copy the file before the first `validate` if you
-want to be able to compare. A graph that needed heavy repair is a graph to regenerate.
+on the same run that refuses the cycle. What `validate` drops it hands back **whole**:
+every removed node appears in the report with its probe, goals, cost and provenance
+intact, so it can be pasted straight back out of the output. That covers schema fields
+only. Keys the schema does not define are discarded by the *parser*, before `validate`
+runs and outside anything it could report — so if you put a citation somewhere the
+schema has no room for, copy the file first, because that one really is unrecoverable.
+A graph that needed heavy repair is still a graph to regenerate.
 
 A goal is named, not pathed: `ramp` is `$XDG_DATA_HOME/benkyou/goals/ramp.json` (default
 under `~/.local/share`). Run `benkyou goals` first: it reports that directory and creates
@@ -431,4 +436,6 @@ Be straight with the user about this rather than implying otherwise:
   grader imports the learner's module into its own process. The gate's own reference
   run is the exception: it cannot see `check/` at all. Whoever writes the solution
   should still not read `check/`.
-- No backups. `validate` rewrites the goal file in place.
+- No backups. `validate` rewrites the goal file in place. What it removes is returned
+  whole in the report, so a dropped node can be pasted back; keys outside the schema
+  are dropped earlier, by the parser, and nothing reports those.

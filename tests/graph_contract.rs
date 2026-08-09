@@ -246,8 +246,8 @@ fn validate_is_idempotent_and_deterministic() {
     assert_eq!(r1, r3, "validate is not deterministic");
     assert_eq!(shape(&first), shape(&other));
 
-    assert!(r1.duplicate_nodes.iter().any(|id| id == "dup"));
-    assert!(r1.dropped_irrelevant.iter().any(|id| id == "weak"));
+    assert!(r1.duplicate_nodes.iter().any(|n| n.id == "dup"));
+    assert!(r1.dropped_irrelevant.iter().any(|n| n.id == "weak"));
     // The self-loop and the edge naming a missing node are both dangling material.
     assert!(r1.dangling_edges.iter().any(|e| e.from == "a" && e.to == "a"));
     assert!(r1.dangling_edges.iter().any(|e| e.from == "missing"));
@@ -279,4 +279,78 @@ fn closure_collapses_the_ancestor_cone() {
     assert_eq!(ids(&g.outer_fringe(&closed)), vec!["z"]);
     // Only d is on the frontier of what is known; a, b, c are prerequisites of it.
     assert_eq!(ids(&g.inner_fringe(&closed)), vec!["d"]);
+}
+
+/// `validate` rewrites the goal file in place and keeps no backup, so its report is
+/// the only surviving copy of whatever it removed. An id cannot rebuild a node: the
+/// authored content is the expensive part, and a report naming only the id tells the
+/// author what they lost without letting them put it back.
+///
+/// This is the property, not the field type: drop a node, and paste it back out of
+/// the report.
+#[test]
+fn a_dropped_node_can_be_restored_from_the_report_alone() {
+    let mut authored = node("hand_written", 45);
+    authored.title = "Window functions over partitioned sales".into();
+    authored.probe = "Rank each region's reps by quarterly revenue, ties shared.".into();
+    authored.goals = vec!["RANK vs DENSE_RANK".into(), "PARTITION BY".into()];
+    authored.provenance = Provenance::JobDesc;
+    authored.gradable = false;
+    authored.relevance = 0.1; // below RELEVANCE_FLOOR
+
+    let mut g = graph(vec![node("kept", 10), authored.clone()], vec![]);
+    let report = g.validate(RELEVANCE_FLOOR, NODE_CAP);
+
+    // Gone from the graph, and the file on disk would now be missing it.
+    assert_eq!(ids(&g.nodes.iter().map(|n| n.id.clone()).collect::<Vec<_>>()), vec!["kept"]);
+
+    // Every authored field comes back, not just the name.
+    assert_eq!(report.dropped_irrelevant, vec![authored.clone()]);
+
+    // The real test: put it back and the graph is whole again, byte for byte
+    // through the same serialisation the goal file uses.
+    let recovered: Node = serde_json::from_str(
+        &serde_json::to_string(&report.dropped_irrelevant[0]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(recovered, authored, "the report must round-trip through JSON");
+
+    let mut restored = graph(vec![node("kept", 10), recovered], vec![]);
+    restored.nodes[1].relevance = 1.0; // the author fixes what got it dropped
+    let second = restored.validate(RELEVANCE_FLOOR, NODE_CAP);
+    assert!(second.is_clean(), "the restored graph validates clean");
+    assert_eq!(restored.nodes[1].probe, authored.probe);
+    assert_eq!(restored.nodes[1].goals, authored.goals);
+}
+
+/// The cap path builds its own ordering and drops by index, which is the easiest
+/// place to return the wrong node with the right id. Least-relevant-first ordering
+/// is documented, and the survivors keep the order the author wrote.
+#[test]
+fn nodes_dropped_over_cap_come_back_whole_and_least_relevant_first() {
+    let mut nodes = Vec::new();
+    for (i, rel) in [0.9f32, 0.4, 0.7, 0.5].into_iter().enumerate() {
+        let mut n = node(&format!("n{i}"), 10);
+        n.relevance = rel;
+        n.probe = format!("authored probe {i}");
+        nodes.push(n);
+    }
+    let mut g = graph(nodes.clone(), vec![]);
+    let report = g.validate(0.0, 2);
+
+    // Two dropped, least relevant first: n1 (0.4) then n3 (0.5).
+    assert_eq!(
+        report.dropped_over_cap.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+        vec!["n1", "n3"]
+    );
+    // Whole nodes, matched to the right ids rather than shuffled by the index dance.
+    assert_eq!(report.dropped_over_cap[0].probe, "authored probe 1");
+    assert_eq!(report.dropped_over_cap[1].probe, "authored probe 3");
+    assert_eq!(report.dropped_over_cap[0], nodes[1]);
+    assert_eq!(report.dropped_over_cap[1], nodes[3]);
+    // Survivors keep authored order, not sorted order.
+    assert_eq!(
+        g.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+        vec!["n0", "n2"]
+    );
 }
