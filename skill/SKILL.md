@@ -30,8 +30,8 @@ Every command below is the `benkyou` binary. Check it is there before planning a
 around it:
 
 ```sh
-benkyou --help || cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.2.0
-benkyou --version                            # this file documents benkyou 0.1.x
+benkyou --help || cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.3.0
+benkyou --version                            # this file documents benkyou 0.3.x
 ```
 
 This file travels on its own, so do not assume a checkout is nearby — `--git` works from
