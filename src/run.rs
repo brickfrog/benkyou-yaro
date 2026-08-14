@@ -318,12 +318,35 @@ impl Backend {
 /// `bwrap`; and because the answer cannot change underneath a single command.
 static SANDBOX: LazyLock<Result<Backend, String>> = LazyLock::new(detect_sandbox);
 
-fn detect_sandbox() -> Result<Backend, String> {
-    let bwrap = which("bwrap").ok_or_else(|| {
+/// The refusal when `bwrap` is not on `$PATH`.
+///
+/// Two different failures wear the same missing binary. On Linux it is a package away.
+/// Everywhere else `bwrap` is a Linux program — it isolates with Linux namespaces, and
+/// there is nothing to install — so "install it" would send the reader after a package
+/// that cannot exist, and the only honest advice is to move the executing half to a
+/// Linux host. The state travels and the exercise library is plain JSON; the sandbox is
+/// the one part that does not.
+///
+/// Takes the OS rather than reading `cfg!`, so the wording a mac user gets is reachable
+/// from a test on the machine that wrote it.
+fn no_sandbox_message(os: &str) -> String {
+    if os == "linux" {
         "no sandbox available: `bwrap` (bubblewrap) is not on PATH. Install it, or pass \
          --unsafe-host to run generated scripts with your own user's rights."
             .to_string()
-    })?;
+    } else {
+        format!(
+            "no sandbox available: the sandbox is bubblewrap, which isolates with Linux \
+             namespaces, and this is {os}. Nothing to install here: run `gate`, \
+             `attempt`, `grade` and `serve` on a Linux host, or pass --unsafe-host to \
+             run generated scripts with your own user's rights."
+        )
+    }
+}
+
+fn detect_sandbox() -> Result<Backend, String> {
+    let bwrap =
+        which("bwrap").ok_or_else(|| no_sandbox_message(std::env::consts::OS))?;
 
     let version = Command::new(&bwrap)
         .arg("--version")
@@ -714,6 +737,36 @@ pub struct Outcome {
 impl Outcome {
     pub fn succeeded(&self) -> bool {
         !self.timed_out && self.exit_code == Some(0)
+    }
+}
+
+/// The wording of a refusal is the whole of what a caller on the wrong platform gets,
+/// and the case that matters is the one this machine cannot reach.
+#[cfg(test)]
+mod refusal_tests {
+    use super::no_sandbox_message;
+
+    #[test]
+    fn linux_is_told_to_install_it() {
+        let msg = no_sandbox_message("linux");
+        assert!(msg.contains("not on PATH"), "{msg}");
+        assert!(msg.contains("Install it"), "{msg}");
+        assert!(msg.contains("--unsafe-host"), "{msg}");
+    }
+
+    /// On a mac there is nothing to install, so advice to install is worse than none:
+    /// it sends the reader to a Homebrew formula for a Linux namespace API.
+    #[test]
+    fn a_mac_is_told_where_the_sandbox_lives_instead() {
+        let msg = no_sandbox_message("macos");
+        assert!(msg.contains("macos"), "the refusal must name the platform: {msg}");
+        assert!(!msg.contains("Install it"), "nothing to install on a mac: {msg}");
+        assert!(msg.contains("Linux namespaces"), "{msg}");
+        assert!(msg.contains("Linux host"), "{msg}");
+        assert!(msg.contains("--unsafe-host"), "{msg}");
+        for cmd in ["gate", "attempt", "grade", "serve"] {
+            assert!(msg.contains(cmd), "refusal did not name {cmd}: {msg}");
+        }
     }
 }
 

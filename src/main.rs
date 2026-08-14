@@ -96,10 +96,15 @@ USAGE
       cannot tell whether a grader can actually judge a `skill` node - that call is
       yours.
 
-  benkyou cards <cards.json> [--deck NAME] [--push]
+  benkyou cards <cards.json> [--deck NAME] [--push] [--anki-addr HOST:PORT]
       Build Anki notes from generated cards. Prints them and stops; pass --push
       to write them. Note identity comes from concept + role, never from the card
       text, so a regenerated card updates in place and keeps its review history.
+      --push talks to AnkiConnect at 127.0.0.1:8765, where the add-on listens on
+      the machine running Anki. --anki-addr, or $BENKYOU_ANKI_ADDR, names a
+      different one: Anki on another machine reached through a forwarded port
+      (`ssh -R 8765:127.0.0.1:8765 host`, then the address stays the default), or
+      a tunnel landing on a port of its own.
 
   benkyou gate <exercise-dir> [--scratch DIR]
       Run the validation gate. The reference solution must pass, the untouched
@@ -171,6 +176,13 @@ EXECUTION
   workspaces, a throwaway HOME, a scrubbed environment, and resource ceilings. It
   needs `bwrap` (bubblewrap). Without it these commands refuse rather than run
   unprotected.
+
+  That makes the four of them Linux-only: bubblewrap isolates with Linux namespaces,
+  and there is no equivalent to install on macOS or any other Unix. Everything else
+  here - the graph, the assessment, the schedule, the orders, the cards - is plain
+  file work and runs anywhere. Split the two across machines if you have to: the
+  goals, the fluency file and the exercise bank belong on whichever host executes,
+  since a verdict earned on one machine is refused on another anyway.
 
   --unsafe-host turns the sandbox off for one invocation. Generated scripts then run
   as you, over your whole filesystem. A gate verdict records which backend earned it
@@ -779,6 +791,16 @@ fn run(args: &[String]) -> Result<String, String> {
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             let deck = flag(args, "--deck").unwrap_or_else(|| "benkyou".to_string());
 
+            // Resolved before the dry run rather than beside the push. The dry run is
+            // the rehearsal, so an address `--push` would refuse has to fail here as
+            // well, or the rehearsal is not one. An exported-but-empty variable counts
+            // as unset, which is what every shell that exports it conditionally means.
+            let addr = flag(args, "--anki-addr")
+                .or_else(|| std::env::var("BENKYOU_ANKI_ADDR").ok())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| benkyou::anki::DEFAULT_ADDR.to_string());
+            let anki = benkyou::anki::AnkiConnect::new(&addr)?;
+
             // Dry run builds every note and prints it, touching nothing. Default,
             // because the alternative writes into a collection the user has spent
             // years curating.
@@ -792,12 +814,14 @@ fn run(args: &[String]) -> Result<String, String> {
                 }));
             }
 
-            let anki = benkyou::anki::AnkiConnect::default();
             let version = anki.version()?;
             let created = anki.ensure_models()?;
             let report = anki.push(&cards, &deck)?;
             let failed = report.failed.len();
             let body = json(&serde_json::json!({
+                // Which collection took the write. With a tunnel in play the version
+                // number alone does not say which machine answered.
+                "anki_addr": anki.addr,
                 "ankiconnect_version": version,
                 "models_created": created,
                 "deck": deck,

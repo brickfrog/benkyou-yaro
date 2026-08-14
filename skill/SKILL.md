@@ -40,11 +40,13 @@ is deliberate: it installs the binary this document was written against, so the 
 consistent by construction rather than by anyone noticing it is not.
 
 That still leaves the case where a `benkyou` was already on `$PATH` and no install ran,
-which is what the `--version` line is for. Compare only the first two numbers: any
-`0.1.z` binary honours the commands described here, because a patch release does not
-move the CLI. If it reports `0.2` or later, this file is the stale half — trust the
-binary's own `--help`, say the two disagree, and either fetch a newer skill or add
-`--force` to the install above to pin the binary back to this one.
+which is what the `--version` line is for. Compare it against the version named in the
+comment beside it, first two numbers only — a patch release does not move the CLI, so a
+binary agreeing on both honours the commands described here. This file states its
+version in exactly one place on purpose: a second copy is a second thing to update and
+the one that goes stale. A different major or minor means this file is the stale half —
+trust the binary's own `--help`, say the two disagree, and either fetch a newer skill or
+add `--force` to the install above to pin the binary back to this one.
 
 `cargo install` puts it on `$PATH` (`~/.cargo/bin`). There is no daemon, no server and
 no config file to write — the binary plus a goal file is the whole installation. If the
@@ -237,6 +239,11 @@ property most card generators get wrong.
 - `cloze` uses `{{c1::...}}`; each span becomes its own card from one note.
 - Default is a dry run. `--push` writes to a collection the user may have curated for
   years — show them the dry run first unless they have already said go.
+- `--push` goes to AnkiConnect on `127.0.0.1:8765`, which is Anki on *this* machine.
+  If the learner's collection is on another one, `--anki-addr HOST:PORT` (or
+  `$BENKYOU_ANKI_ADDR`) names where to write instead — the usual shape is a forwarded
+  port over SSH. Do not guess an address: ask, and check `anki_addr` in the report to
+  see which collection took the write.
 
 ## Filling an exercise order
 
@@ -421,6 +428,20 @@ Be straight with the user about this rather than implying otherwise:
 - No card or exercise generator. `order` tells you what to write; you write it.
 - No UI, no visualiser, no web app.
 - Unix only — the runner uses `/bin/sh` and process groups. It will not run on Windows.
+- **The half that runs scripts is Linux-only, and macOS is the case you will meet.**
+  The sandbox is bubblewrap, which isolates with Linux namespaces; there is no
+  equivalent to install elsewhere, so on macOS `gate`, `attempt`, `grade` and `serve`
+  refuse and say so. Everything else — `schema`, `validate`, `seed`, `ask`, `record`,
+  `order`, `cards`, `practice`, `session`, `goals` — is file work and runs anywhere,
+  which is exactly the trap: you can generate a whole exercise on a Mac and never be
+  able to gate it, so an ungatable exercise is one you must not hand over.
+  `--unsafe-host` is the flag the error names, and it runs generated `solve.sh` and
+  `check.sh` with the user's own rights over their whole filesystem. **Never pass it on
+  your own initiative.** Report the refusal, offer the two real options — run the
+  exercise half on a Linux host, or read every generated script yourself and let the
+  user decide — and if they choose the flag, keep the goal file, the fluency file and
+  the bank on whichever machine executes: a verdict earned on one machine is refused on
+  another.
 - No schema validation beyond serde. Unknown keys are accepted silently, so a misspelled
   field is not an error — it is a field that is never read. Start from `benkyou schema`.
 - No way to cite a source. `provenance` is only `llm`, `user` or `job_desc`.

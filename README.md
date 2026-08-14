@@ -34,7 +34,10 @@ no graph editor, no visualiser, and no knowledge tracing.
 ## Requirements
 
 - Rust (2021), and a Unix system with `/bin/sh`
-- `bubblewrap` (`bwrap`), for the sandbox. Every command that runs a script needs it.
+- Linux, for the commands that run a script. `bubblewrap` (`bwrap`) is the sandbox, and
+  it isolates with Linux namespaces. `gate`, `attempt`, `grade` and `serve` need it and
+  refuse without it. macOS builds and runs everything else: the graph, the assessment,
+  the schedule, the orders and the cards are plain file work.
 - Anki with AnkiConnect, for `cards --push` only
 - `uv`, for `benkyou warm` only
 - The programs that your own exercises call
@@ -71,20 +74,47 @@ permissions, over your whole filesystem. Read a generated `check/check.sh` and
 
 ```sh
 cargo build --release   # target/release/benkyou
-cargo test              # 338 tests
+cargo test
 ```
+
+### Anki or the browser on another machine
+
+The tool runs where the sandbox is. Anki and your browser may be somewhere else. One SSH
+connection carries both directions.
+
+`cards --push` writes to AnkiConnect, which listens on `127.0.0.1:8765` on the machine
+that runs Anki. `--anki-addr HOST:PORT`, or `$BENKYOU_ANKI_ADDR`, names a different one.
+The push report prints `anki_addr`, so you can see which collection took the write.
+
+`serve` binds `127.0.0.1` and never anything else. That is the containment, so it stays.
+Forward the port instead and open the URL that `serve` printed, token and all.
+
+```sh
+# Run this on the machine that has the browser and Anki, not on the runner.
+#   -L: your browser        -> `benkyou serve --port 43117 --no-open` on the runner
+#   -R: the runner's --push -> your own AnkiConnect
+ssh -N -L 43117:127.0.0.1:43117 -R 8765:127.0.0.1:8765 you@runner
+```
+
+Keep the goal file, the fluency file and the exercise bank on the machine that executes.
+They are one body of state, and a gate verdict is refused on a machine other than the one
+that earned it. Do not sync them both ways while the tool is running.
 
 ## Use it from a chat agent
 
-Any assistant you already talk to can operate this tool. `skill/SKILL.md` teaches one
-how. Install both parts.
+Any assistant you already talk to can operate this tool. Nothing in the skill is specific
+to one harness: it is one Markdown file that describes a CLI, and the tool holds no key
+and calls no model. `skill/SKILL.md` teaches one how. Install both parts.
+
+`~/.claude/skills/benkyou/` below is one harness's skill directory. Put the file wherever
+yours keeps them — some install a skill by URL instead, which needs no `curl` at all.
 
 From a checkout:
 
 ```sh
 cargo install --path .                        # puts `benkyou` on $PATH
 mkdir -p ~/.claude/skills/benkyou
-cp skill/SKILL.md ~/.claude/skills/benkyou/   # or wherever your harness keeps skills
+cp skill/SKILL.md ~/.claude/skills/benkyou/
 ```
 
 The skill is one file, and the binary needs no other part of the repo. Both parts must
@@ -277,7 +307,10 @@ pointed at each other. Three files carry the version. Move all three together.
 
 1. `Cargo.toml` — raise `version`.
 2. `skill/SKILL.md` — the `--tag vX.Y.Z` line in the bootstrap, and the
-   `documents benkyou X.Y.x` comment beside it.
+   `documents benkyou X.Y.x` comment beside it. Those two are the only version literals
+   in the skill, and the prose around them must stay version-free: a third copy is a
+   third thing to update, and the copy that goes stale tells an agent to reject the
+   binary it was shipped with.
 3. `README.md` — the `--tag` line and the raw URL in the pinned install.
 4. Run `cargo test`.
 5. Commit the change.

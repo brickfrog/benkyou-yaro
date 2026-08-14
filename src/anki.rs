@@ -188,10 +188,19 @@ impl Card {
     }
 }
 
+/// Where AnkiConnect listens, on the machine that is running Anki.
+///
+/// The add-on binds loopback and nothing here can change that, so this is the only
+/// address a local collection is ever at. It is a default rather than a constant for
+/// the one case that is not local: Anki on another machine, reached through a
+/// forwarded port, where the destination is whichever local port carries the tunnel.
+pub const DEFAULT_ADDR: &str = "127.0.0.1:8765";
+
 /// A minimal AnkiConnect client.
 ///
-/// AnkiConnect is one JSON POST to localhost, so this speaks HTTP/1.1 directly rather
-/// than pulling in an async runtime for a loopback request.
+/// AnkiConnect is one JSON POST to a loopback address, so this speaks HTTP/1.1
+/// directly rather than pulling in an async runtime for one request.
+#[derive(Debug)]
 pub struct AnkiConnect {
     pub addr: String,
     pub timeout: Duration,
@@ -199,11 +208,42 @@ pub struct AnkiConnect {
 
 impl Default for AnkiConnect {
     fn default() -> Self {
-        Self { addr: "127.0.0.1:8765".into(), timeout: Duration::from_secs(10) }
+        Self { addr: DEFAULT_ADDR.into(), timeout: Duration::from_secs(10) }
     }
 }
 
 impl AnkiConnect {
+    /// `HOST:PORT`, as `TcpStream::connect` reads it — a name resolves, so a tunnel
+    /// endpoint or a LAN hostname both work.
+    ///
+    /// Checked here rather than left to the connect: `push` builds every note before
+    /// it opens a socket, so a malformed address would otherwise be reported after the
+    /// work, as a resolver error quoting something the caller never typed. The two
+    /// wrong guesses worth naming are a URL — this posts to a bare address and has no
+    /// scheme or path to honour — and a bare IPv6 address, whose colons are
+    /// indistinguishable from the port separator without brackets.
+    pub fn new(addr: &str) -> Result<Self, String> {
+        let addr = addr.trim();
+        let bad = |why: &str| Err(format!("anki address `{addr}`: {why}"));
+        if addr.contains("://") {
+            return bad("expected HOST:PORT, not a URL");
+        }
+        let Some((host, port)) = addr.rsplit_once(':') else {
+            return bad(&format!("expected HOST:PORT, as in {DEFAULT_ADDR}"));
+        };
+        if host.is_empty() {
+            return bad("no host before the port");
+        }
+        if host.contains(':') && !host.starts_with('[') {
+            return bad("an IPv6 address needs brackets, as in [::1]:8765");
+        }
+        match port.parse::<u16>() {
+            Ok(p) if p > 0 => {}
+            _ => return bad(&format!("`{port}` is not a port")),
+        }
+        Ok(Self { addr: addr.to_string(), ..Default::default() })
+    }
+
     pub fn call(&self, action: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
         let body = serde_json::json!({ "action": action, "version": 6, "params": params });
         let body = serde_json::to_string(&body).map_err(|e| e.to_string())?;

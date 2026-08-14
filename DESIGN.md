@@ -641,6 +641,29 @@ A missing sandbox is a refusal, not a downgrade. Claiming isolation while only c
 the working directory is worse than not having it, because then the warnings stop being
 read.
 
+The sandbox is therefore Linux, and the refusal follows the host to another operating
+system. Bubblewrap isolates with Linux namespaces; on macOS there is no equivalent to
+install, so `gate`, `attempt`, `grade` and `serve` refuse there and the error says which
+of the two failures it is rather than sending the reader after a package that cannot
+exist. Everything else — the graph, the assessment, the schedule, the orders, the cards —
+is file work and portable. That split is usable rather than merely honest: the executing
+half wants the goals, the fluency file and the bank beside it, which is the same
+arrangement the environment fingerprint already forces, since a verdict earned on one
+machine is refused on another.
+
+A container backend — Docker or Podman in place of the missing namespaces — is the
+obvious next backend and is deliberately not here. It is not the sandboxing that stops
+it. An image is a *second* `/usr`, and two things are keyed to the first one: the
+environment fingerprint a verdict carries, and the warm cache, whose key includes the
+interpreter's ABI and whose wheels are installed by the host's `uv` against the host's
+Python. Run the same exercise under an image with a different interpreter and the
+read-only dependency directory is bytes that interpreter cannot load — an
+import error reported as `CheckBroken`, which the skill teaches is always the author's
+bug. Fixing that means the image, its interpreter and the warm cache become one keyed
+unit, and pulling an image is a network dependency on a path that has exactly one
+network command today. That is a feature with its own design, not a third arm of this
+one.
+
 The two backends differ in isolation and deliberately in nothing else: same environment
 allowlist, same limits, same relative layout. When an exercise passes under one and
 fails under the other, the difference is isolation, and the search does not also have to
