@@ -429,9 +429,11 @@ Be straight with the user about this rather than implying otherwise:
 - No UI, no visualiser, no web app.
 - Unix only — the runner uses `/bin/sh` and process groups. It will not run on Windows.
 - **The half that runs scripts is Linux-only, and macOS is the case you will meet.**
-  The sandbox is bubblewrap, which isolates with Linux namespaces; there is no
-  equivalent to install elsewhere, so on macOS `gate`, `attempt`, `grade` and `serve`
-  refuse and say so. Everything else — `schema`, `validate`, `seed`, `ask`, `record`,
+  The sandbox is bubblewrap, which isolates with Linux namespaces, and the tool has no
+  other backend: on macOS `gate`, `attempt`, `grade` and `serve` refuse and say so. Do
+  not argue the point with `sandbox-exec` — macOS does have a sandbox of its own, this
+  tool does not drive it, and it could not bound a process tree or a scratch filesystem
+  if it did. Everything else — `schema`, `validate`, `seed`, `ask`, `record`,
   `order`, `cards`, `practice`, `session`, `goals` — is file work and runs anywhere,
   which is exactly the trap: you can generate a whole exercise on a Mac and never be
   able to gate it, so an ungatable exercise is one you must not hand over.

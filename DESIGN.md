@@ -664,6 +664,31 @@ unit, and pulling an image is a network dependency on a path that has exactly on
 network command today. That is a feature with its own design, not a third arm of this
 one.
 
+macOS does have a sandbox, and the reason it is not this one is worth writing down
+because "there is nothing on a mac" is the wrong summary. Seatbelt, reached through
+`sandbox-exec`, is a *policy filter* where bubblewrap is a *namespace constructor*, and
+the difference lands unevenly across what the isolation policy above actually promises.
+It denies the network outright, and a `(deny default)` profile with explicit read
+allowances covers the view well enough that the gate's reference run still could not
+read `check/`. It has no answer at all for three: there is no PID namespace, so the
+deadline is back to a process group and a fork bomb is uncapped for the same reason
+`RLIMIT_NPROC` is skipped on the host; there is no bounded tmpfs, so a runaway writes
+to the real disk; and without bind mounts there is no synthetic `/etc/passwd` and no
+`/box`, so the choice is the host's account list or a failing `getpwuid`, and the run
+directory's real path leaks into whatever a grader prints. The three it cannot do are
+the containment for a mistaken generator, which is the failure this section opened by
+calling a certainty. `sandbox-exec` and the `sandbox_init*` family are also deprecated
+and SBPL is undocumented for third-party use; Chromium still runs on it and says as
+much in its own source.
+
+So a Seatbelt backend is buildable and would be a *third tier*, not a second
+implementation of the first. It would have to say so: its own `Backend` variant and its
+own `profile()` string, never folded into `Sandbox`. Otherwise "passed under the
+sandbox" means two different things depending on which machine ran it, and because a
+verdict is already refused on any other machine, nobody would ever see the tier change
+underneath them. Note also that the container route on a mac is a Linux VM, so it
+replaces `/usr` regardless: it does not avoid the keying problem above, it guarantees it.
+
 The two backends differ in isolation and deliberately in nothing else: same environment
 allowlist, same limits, same relative layout. When an exercise passes under one and
 fails under the other, the difference is isolation, and the search does not also have to
