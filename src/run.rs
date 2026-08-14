@@ -347,17 +347,20 @@ impl Backend {
     /// Execution profile: what a verdict earned under this backend was earned under.
     ///
     /// For the sandbox this names the isolation tool and its version, which is a real
-    /// property of the run. For a container it names the engine, its version and the
-    /// reference that was pinned — evidence a reader can act on, while the identity
-    /// that decides staleness is [`Backend::image_id`]. For the host backend it is
-    /// deliberately just `host`: enumerating what the host provided is exactly the
-    /// thing that cannot be done (see `digest::exercise_digest`), and a longer string
-    /// would imply otherwise.
+    /// property of the run. For a container it names the engine, its version, the
+    /// reference that was pinned and the architecture that reference resolved to —
+    /// evidence a reader can act on, while the identity that decides staleness is
+    /// [`Backend::image_id`]. The architecture is written here as well as being implied
+    /// by the id because a refusal has to be readable: "running a different id" is true
+    /// but unhelpful when the actual difference is that the verdict was earned on arm64.
+    /// For the host backend it is deliberately just `host`: enumerating what the host
+    /// provided is exactly the thing that cannot be done (see `digest::exercise_digest`),
+    /// and a longer string would imply otherwise.
     pub fn profile(&self) -> String {
         match self {
             Backend::Sandbox { version, .. } => format!("bwrap {version}"),
             Backend::Container { engine, version, image, .. } => {
-                format!("{engine} {version} {}", image.reference)
+                format!("{engine} {version} {} ({})", image.reference, image.arch)
             }
             Backend::UnsafeHost => "host".to_string(),
         }

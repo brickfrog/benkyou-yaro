@@ -176,6 +176,37 @@ fn a_read_only_view_entry_cannot_be_written() {
     assert_eq!(std::fs::read_to_string(dir.join("check/check.sh")).unwrap(), "original");
 }
 
+/// The gate's first direction, exactly as it is built: the reference solution runs with
+/// `work/` and `solution/` in view and `check/` left out, so a `solve.sh` cannot pass by
+/// reading the tests it is supposed to be independent of.
+///
+/// Spelled out rather than left to the generic view test, because this is the claim the
+/// whole gate rests on and it is the one an engine could quietly break: mount lists are
+/// assembled per job, so "the view is honoured" and "this particular view is honoured"
+/// are not the same assertion.
+#[test]
+fn the_reference_run_cannot_see_the_hidden_checks() {
+    let Some(backend) = container() else { return };
+    let dir = scratch("hidden");
+    std::fs::create_dir_all(dir.join("check")).unwrap();
+    std::fs::create_dir_all(dir.join("solution")).unwrap();
+    std::fs::write(dir.join("check/cases.py"), "EXPECTED = [1, 2, 3]").unwrap();
+    std::fs::write(dir.join("solution/solve.sh"), "cat ../check/cases.py").unwrap();
+
+    let out = backend
+        .run(&Job::new(
+            &dir,
+            &[("work", Access::Write), ("solution", Access::Read)],
+            "work",
+            "sh ../solution/solve.sh",
+            60,
+        ))
+        .expect("ran");
+
+    assert!(!out.succeeded(), "the reference run read the hidden checks: {out:?}");
+    assert!(!out.stdout.contains("EXPECTED"), "{out:?}");
+}
+
 /// The user's files are not reachable by absolute path either. The view is the whole
 /// filesystem the job has, not a working-directory convention.
 #[test]
