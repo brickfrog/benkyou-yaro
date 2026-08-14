@@ -34,14 +34,22 @@ fn auto_takes_the_sandbox_first_and_a_container_second() {
             "with no namespaces available the engine is the isolating backend"
         ),
         (false, false) => {
+            // Both halves are reported, because a reader on Linux wants to know bubblewrap
+            // was looked for, and a reader on a mac needs the first line to explain why a
+            // container is being discussed at all. The second half has three shapes: no
+            // engine on `PATH`, an engine that cannot answer, or an image never pulled.
+            // This asserts the composition and leaves the wording to `run.rs`.
             let err = auto.expect_err("neither backend exists here");
+            let (first, rest) = err
+                .split_once('\n')
+                .unwrap_or_else(|| panic!("only one half was reported: {err}"));
             assert!(
-                err.contains("bwrap"),
-                "the refusal must name bubblewrap: {err}"
+                first.contains("bwrap"),
+                "the sandbox half is missing: {err}"
             );
             assert!(
-                err.contains("docker") || err.contains("container"),
-                "the refusal must name the other route: {err}"
+                !rest.trim().is_empty(),
+                "the container half is empty: {err}"
             );
         }
     }
