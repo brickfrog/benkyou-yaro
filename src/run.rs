@@ -63,7 +63,10 @@ const BOX_BYTES: u64 = 64 * 1024 * 1024;
 /// and `TZ` are pinned rather than dropped, because sort order and date format decide
 /// grader output.
 const ENV: [(&str, &str); 6] = [
-    ("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"),
+    (
+        "PATH",
+        "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
+    ),
     ("TMPDIR", "/tmp"),
     ("LANG", "C.UTF-8"),
     ("LC_ALL", "C.UTF-8"),
@@ -180,7 +183,15 @@ impl<'a> Job<'a> {
         script: &'a str,
         timeout_secs: u32,
     ) -> Self {
-        Self { root, view, cwd, script, timeout_secs, limits: Limits::default(), deps: None }
+        Self {
+            root,
+            view,
+            cwd,
+            script,
+            timeout_secs,
+            limits: Limits::default(),
+            deps: None,
+        }
     }
 
     /// Bind a warmed dependency set into the job.
@@ -283,7 +294,12 @@ pub enum Backend {
     /// This is what makes the tool work where there are no Linux namespaces to unshare.
     /// `name()` differs from the sandbox, so a verdict earned under one backend is refused
     /// under the other.
-    Container { cli: PathBuf, engine: &'static str, version: String, image: Image },
+    Container {
+        cli: PathBuf,
+        engine: &'static str,
+        version: String,
+        image: Image,
+    },
     /// Not isolated. The job runs as the user, with the user's rights, over the user's whole
     /// filesystem.
     UnsafeHost,
@@ -356,7 +372,12 @@ impl Backend {
     pub fn profile(&self) -> String {
         match self {
             Backend::Sandbox { version, .. } => format!("bwrap {version}"),
-            Backend::Container { engine, version, image, .. } => {
+            Backend::Container {
+                engine,
+                version,
+                image,
+                ..
+            } => {
                 format!("{engine} {version} {} ({})", image.reference, image.arch)
             }
             Backend::UnsafeHost => "host".to_string(),
@@ -385,7 +406,13 @@ impl Backend {
             Backend::Container { cli, image, .. } => {
                 let name = container_name();
                 let cmd = container_command(cli, image, job, &script, &name)?;
-                (cmd, Kill::Container { cli: cli.clone(), name })
+                (
+                    cmd,
+                    Kill::Container {
+                        cli: cli.clone(),
+                        name,
+                    },
+                )
             }
             Backend::UnsafeHost => (host_command(job, &script)?, Kill::Group),
         };
@@ -431,15 +458,17 @@ fn no_sandbox_message(os: &str) -> String {
 }
 
 fn detect_sandbox() -> Result<Backend, String> {
-    let bwrap =
-        which("bwrap").ok_or_else(|| no_sandbox_message(std::env::consts::OS))?;
+    let bwrap = which("bwrap").ok_or_else(|| no_sandbox_message(std::env::consts::OS))?;
 
     let version = Command::new(&bwrap)
         .arg("--version")
         .output()
         .map_err(|e| format!("no sandbox available: {} --version: {e}", bwrap.display()))
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
-    let version = version.strip_prefix("bubblewrap ").unwrap_or(&version).to_string();
+    let version = version
+        .strip_prefix("bubblewrap ")
+        .unwrap_or(&version)
+        .to_string();
 
     // Presence is not capability. Unprivileged user namespaces are disabled on some kernels
     // and restricted by LSM policy on others, and the failure surfaces on the first mount.
@@ -534,7 +563,10 @@ pub(crate) fn engine_output(cli: &Path, args: &[&str], secs: u64) -> Result<Cont
     let started = Instant::now();
     let mut timed_out = false;
     loop {
-        match child.try_wait().map_err(|e| format!("{}: {e}", cli.display()))? {
+        match child
+            .try_wait()
+            .map_err(|e| format!("{}: {e}", cli.display()))?
+        {
             Some(_) => break,
             None if started.elapsed() >= Duration::from_secs(secs) => {
                 kill_group(pgid);
@@ -559,7 +591,11 @@ pub(crate) fn engine_output(cli: &Path, args: &[&str], secs: u64) -> Result<Cont
             args.first().copied().unwrap_or_default()
         ));
     }
-    Ok(Control { ok: child.wait().map(|s| s.success()).unwrap_or(false), stdout, stderr })
+    Ok(Control {
+        ok: child.wait().map(|s| s.success()).unwrap_or(false),
+        stdout,
+        stderr,
+    })
 }
 
 /// The result of a control command: whether it worked, and what it said.
@@ -683,7 +719,12 @@ fn detect_container(reference: &str) -> Result<Backend, String> {
     // Presence is not capability. A daemon can be installed and not running. An engine can
     // reject a policy flag, an SELinux host can deny the bind mounts, a cgroup can lack
     // memory accounting. All of them otherwise fail in the middle of somebody's gate.
-    let backend = Backend::Container { cli, engine, version, image };
+    let backend = Backend::Container {
+        cli,
+        engine,
+        version,
+        image,
+    };
     probe_container(&backend)?;
 
     if let Backend::Container { cli, .. } = &backend {
@@ -724,7 +765,13 @@ fn engine_version(line: &str) -> String {
 fn inspect_image(cli: &Path, engine: &str, reference: &str) -> Result<Option<Image>, String> {
     let out = engine_output(
         cli,
-        &["image", "inspect", "--format", "{{.Id}} {{.Architecture}}", reference],
+        &[
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}} {{.Architecture}}",
+            reference,
+        ],
         CONTROL_SECS,
     )?;
     if !out.ok {
@@ -743,7 +790,9 @@ fn inspect_image(cli: &Path, engine: &str, reference: &str) -> Result<Option<Ima
         .split_once(' ')
         .ok_or_else(|| format!("{engine}: could not read the id of {reference}: {line:?}"))?;
     if !id.starts_with("sha256:") {
-        return Err(format!("{engine}: {reference} reported no digest id ({id:?})"));
+        return Err(format!(
+            "{engine}: {reference} reported no digest id ({id:?})"
+        ));
     }
     Ok(Some(Image {
         reference: reference.to_string(),
@@ -800,7 +849,11 @@ fn probe_container(backend: &Backend) -> Result<(), String> {
         Ok(out) => Err(format!(
             "{} could not run a job ({}). Is the engine running?",
             backend.profile(),
-            if out.stderr.trim().is_empty() { out.stdout.trim() } else { out.stderr.trim() }
+            if out.stderr.trim().is_empty() {
+                out.stdout.trim()
+            } else {
+                out.stderr.trim()
+            }
         )),
         Err(e) => Err(format!("{}: {e}", backend.profile())),
     }
@@ -827,7 +880,10 @@ fn reap_orphans(cli: &Path) {
         return;
     };
     for line in out.stdout.lines() {
-        let Some((id, owner)) = line.split_whitespace().next().zip(line.split_whitespace().nth(1))
+        let Some((id, owner)) = line
+            .split_whitespace()
+            .next()
+            .zip(line.split_whitespace().nth(1))
         else {
             continue;
         };
@@ -911,12 +967,20 @@ fn base_args() -> Result<Vec<String>, String> {
         "/tmp".to_string(),
     ]);
     for path in HOST_RO {
-        a.extend(["--ro-bind-try".to_string(), path.to_string(), path.to_string()]);
+        a.extend([
+            "--ro-bind-try".to_string(),
+            path.to_string(),
+            path.to_string(),
+        ]);
     }
     // A synthetic passwd: a failing `getpwuid` breaks Python's `expanduser`, and the host's
     // file lists every account on the machine to the job.
     for (src, dst) in [(passwd, "/etc/passwd"), (group, "/etc/group")] {
-        a.extend(["--ro-bind".to_string(), src.display().to_string(), dst.to_string()]);
+        a.extend([
+            "--ro-bind".to_string(),
+            src.display().to_string(),
+            dst.to_string(),
+        ]);
     }
     for (k, v) in ENV {
         a.extend(["--setenv".to_string(), k.to_string(), v.to_string()]);
@@ -996,7 +1060,10 @@ fn write_identity(dir: &Path, uid: u32, gid: u32) -> Result<(PathBuf, PathBuf), 
 fn write_new(path: &Path, text: &str) -> Result<(), String> {
     use std::io::Write;
     let attempt = || -> std::io::Result<()> {
-        let mut f = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
         f.write_all(text.as_bytes())
     };
     match attempt() {
@@ -1024,7 +1091,11 @@ fn identity_dir(base: &Path, uid: u32) -> Result<PathBuf, String> {
         return Err(format!("{}: not a directory", dir.display()));
     }
     if md.uid() != uid {
-        return Err(format!("{}: owned by uid {}, not {uid}", dir.display(), md.uid()));
+        return Err(format!(
+            "{}: owned by uid {}, not {uid}",
+            dir.display(),
+            md.uid()
+        ));
     }
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
         .map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -1052,7 +1123,11 @@ fn sandbox_command(bwrap: &Path, job: &Job, script: &str) -> Result<Command, Str
     // Read-only, and outside `view` so no caller can hand it out writable. `PYTHONPATH` is
     // set here, not inherited: it is a property of the exercise, not of the caller's shell.
     if let Some(set) = job.deps {
-        cmd.args(["--ro-bind", &set.display().to_string(), crate::deps::GUEST_DEPS]);
+        cmd.args([
+            "--ro-bind",
+            &set.display().to_string(),
+            crate::deps::GUEST_DEPS,
+        ]);
         cmd.args(["--setenv", "PYTHONPATH", crate::deps::GUEST_DEPS]);
     }
     cmd.args(["--chdir", &job.guest_cwd(), "/bin/sh", "-c", script]);
@@ -1122,8 +1197,14 @@ fn container_policy(limits: &Limits) -> Result<Vec<String>, String> {
         .map(|s| s.to_string()),
     );
     a.push(limits.processes.to_string());
-    a.extend(["--memory".to_string(), format!("{}k", limits.address_space_kb)]);
-    a.extend(["--memory-swap".to_string(), format!("{}k", limits.address_space_kb)]);
+    a.extend([
+        "--memory".to_string(),
+        format!("{}k", limits.address_space_kb),
+    ]);
+    a.extend([
+        "--memory-swap".to_string(),
+        format!("{}k", limits.address_space_kb),
+    ]);
     a.extend(["--user".to_string(), format!("{uid}:{gid}")]);
     a.extend([
         "--tmpfs".to_string(),
@@ -1346,10 +1427,7 @@ fn drain<R: Read + Send + 'static>(mut pipe: R, cap: usize) -> mpsc::Receiver<(V
 
 /// Wait for a drained pipe for a bounded grace period. On expiry run `release`, which kills
 /// whatever still holds the pipe, then try once more.
-fn collect(
-    rx: &mpsc::Receiver<(Vec<u8>, bool)>,
-    release: &mut dyn FnMut(),
-) -> (String, bool) {
+fn collect(rx: &mpsc::Receiver<(Vec<u8>, bool)>, release: &mut dyn FnMut()) -> (String, bool) {
     let got = match rx.recv_timeout(DRAIN_GRACE) {
         Ok(v) => Some(v),
         Err(_) => {
@@ -1414,11 +1492,23 @@ mod refusal_tests {
     #[test]
     fn a_mac_is_pointed_at_a_container() {
         let msg = no_sandbox_message("macos");
-        assert!(msg.contains("macos"), "the refusal must name the platform: {msg}");
-        assert!(!msg.contains("Install it"), "nothing to install on a mac: {msg}");
+        assert!(
+            msg.contains("macos"),
+            "the refusal must name the platform: {msg}"
+        );
+        assert!(
+            !msg.contains("Install it"),
+            "nothing to install on a mac: {msg}"
+        );
         assert!(msg.contains("Linux namespaces"), "{msg}");
-        assert!(msg.contains("Linux host"), "the other route must stay named: {msg}");
-        assert!(!msg.contains("--unsafe-host"), "must not offer the host backend: {msg}");
+        assert!(
+            msg.contains("Linux host"),
+            "the other route must stay named: {msg}"
+        );
+        assert!(
+            !msg.contains("--unsafe-host"),
+            "must not offer the host backend: {msg}"
+        );
         for wanted in ["docker", "podman", "benkyou runner --pull"] {
             assert!(msg.contains(wanted), "refusal did not name {wanted}: {msg}");
         }
@@ -1444,7 +1534,10 @@ mod refusal_tests {
             "context deadline exceeded",
             "invalid reference format",
         ] {
-            assert!(!super::absent_image(broken), "a broken engine read as absent: {broken}");
+            assert!(
+                !super::absent_image(broken),
+                "a broken engine read as absent: {broken}"
+            );
         }
     }
 
@@ -1484,7 +1577,9 @@ mod view_tests {
     fn an_absolute_entry_is_refused() {
         let dir = root("abs");
         let job = Job::new(&dir, &[("/etc", Access::Read)], "", ":", 10);
-        let err = job.check_view().expect_err("an absolute entry must be refused");
+        let err = job
+            .check_view()
+            .expect_err("an absolute entry must be refused");
         assert!(err.contains("plain path"), "{err}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1505,7 +1600,9 @@ mod view_tests {
         fs::create_dir_all(dir.join("check")).expect("check");
         std::os::unix::fs::symlink(dir.join("check"), dir.join("alias")).expect("symlink");
         let job = Job::new(&dir, &[("alias", Access::Write)], "", ":", 10);
-        let err = job.check_view().expect_err("a symlinked entry must be refused");
+        let err = job
+            .check_view()
+            .expect_err("a symlinked entry must be refused");
         assert!(err.contains("symlink"), "{err}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1518,14 +1615,13 @@ mod view_tests {
         assert!(job.check_view().is_err(), "a link to /etc must be refused");
         let _ = fs::remove_dir_all(&dir);
     }
-
 }
 
 #[cfg(test)]
 mod identity_tests {
     use super::{identity_dir, uid_gid, write_identity};
     use std::fs;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("bk-ident-{}-{name}", std::process::id()));
@@ -1545,7 +1641,10 @@ mod identity_tests {
         for _ in 0..5 {
             assert_eq!(identity_dir(&base, uid).expect("later call"), first);
         }
-        let dirs: Vec<_> = fs::read_dir(&base).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let dirs: Vec<_> = fs::read_dir(&base)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(dirs.len(), 1, "left behind: {dirs:?}");
         // Adopting is not erasing: a run must not lose the files a sibling wrote.
         assert_eq!(fs::read_to_string(first.join("passwd")).unwrap(), "x");
@@ -1587,9 +1686,14 @@ mod identity_tests {
             "untouched",
             "the write followed the symlink out of the directory"
         );
-        assert!(fs::read_to_string(&passwd).unwrap().contains("box:x:1000:1000"));
+        assert!(fs::read_to_string(&passwd)
+            .unwrap()
+            .contains("box:x:1000:1000"));
         assert!(fs::read_to_string(&group).unwrap().contains("box:x:1000:"));
-        assert!(!fs::symlink_metadata(&passwd).unwrap().file_type().is_symlink());
+        assert!(!fs::symlink_metadata(&passwd)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -1604,7 +1708,9 @@ mod identity_tests {
 
         let (passwd, _) = write_identity(&dir, 1000, 1000).expect("stale debris must clear");
 
-        assert!(fs::read_to_string(&passwd).unwrap().contains("box:x:1000:1000"));
+        assert!(fs::read_to_string(&passwd)
+            .unwrap()
+            .contains("box:x:1000:1000"));
         let left: Vec<_> = fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

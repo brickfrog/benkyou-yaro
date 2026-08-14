@@ -207,7 +207,12 @@ mod tests {
 
     #[test]
     fn an_absolute_xdg_value_wins_and_gets_its_own_subdirectory() {
-        let got = xdg_base(Some(os("/srv/data")), Some(os("/home/j")), "V", ".local/share");
+        let got = xdg_base(
+            Some(os("/srv/data")),
+            Some(os("/home/j")),
+            "V",
+            ".local/share",
+        );
         assert_eq!(got.unwrap(), PathBuf::from("/srv/data/benkyou"));
     }
 
@@ -242,7 +247,10 @@ mod tests {
         assert!(err.contains("HOME"), "{err}");
 
         let err = xdg_base(Some(os("relative")), Some(os("")), "V", ".x").unwrap_err();
-        assert!(err.contains("HOME"), "an empty HOME was treated as set: {err}");
+        assert!(
+            err.contains("HOME"),
+            "an empty HOME was treated as set: {err}"
+        );
     }
 
     #[test]
@@ -256,7 +264,11 @@ mod tests {
             "x.json",
             "../up.json",
         ] {
-            assert_eq!(goal_path(arg).unwrap(), PathBuf::from(arg), "rewrote `{arg}`");
+            assert_eq!(
+                goal_path(arg).unwrap(),
+                PathBuf::from(arg),
+                "rewrote `{arg}`"
+            );
         }
     }
 
@@ -280,8 +292,15 @@ mod tests {
     fn a_workspace_is_keyed_by_concept_and_slug_so_two_exercises_cannot_collide() {
         let a = work_root("sql_joins", "rollup").unwrap();
         let b = work_root("sql_dedup", "rollup").unwrap();
-        assert_ne!(a, b, "same slug under different concepts shared a workspace");
-        assert!(a.ends_with("benkyou/exercises/sql_joins/rollup"), "{}", a.display());
+        assert_ne!(
+            a, b,
+            "same slug under different concepts shared a workspace"
+        );
+        assert!(
+            a.ends_with("benkyou/exercises/sql_joins/rollup"),
+            "{}",
+            a.display()
+        );
     }
 
     #[test]
@@ -291,7 +310,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("benkyou-list-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("notes.json")).unwrap(); // a directory, not a goal
-        for f in ["ramp.json", "ramp.fluency.json", "korean.json", "README.md", ".hidden"] {
+        for f in [
+            "ramp.json",
+            "ramp.fluency.json",
+            "korean.json",
+            "README.md",
+            ".hidden",
+        ] {
             std::fs::write(dir.join(f), "{}").unwrap();
         }
 

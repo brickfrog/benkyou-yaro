@@ -30,7 +30,9 @@ impl OrderKind {
             "cards" => Ok(Self::Cards),
             "exercise" => Ok(Self::Exercise),
             "probe" => Ok(Self::Probe),
-            other => Err(format!("order: kind must be cards|exercise|probe, got `{other}`")),
+            other => Err(format!(
+                "order: kind must be cards|exercise|probe, got `{other}`"
+            )),
         }
     }
 
@@ -356,9 +358,8 @@ fn exercise_order(graph: &Graph, id: &str) -> (Value, Value) {
 }
 
 fn probe_order(graph: &Graph, id: &str) -> Result<(Value, Value), String> {
-    let rejected = rejected_probe(graph, id).ok_or_else(|| {
-        format!("order: `{id}` has no skipped probe — nothing to rewrite")
-    })?;
+    let rejected = rejected_probe(graph, id)
+        .ok_or_else(|| format!("order: `{id}` has no skipped probe — nothing to rewrite"))?;
     let write = json!({
         "field": format!("the `probe` string on node `{id}` in the goal file"),
         "rejected": rejected,
@@ -373,9 +374,7 @@ fn probe_order(graph: &Graph, id: &str) -> Result<(Value, Value), String> {
             "One question. A probe with three parts grades three things and resolves none.",
         ],
     });
-    let submit = json!(
-        "edit the probe in the goal file, then: benkyou ask <goal> --node <id>"
-    );
+    let submit = json!("edit the probe in the goal file, then: benkyou ask <goal> --node <id>");
     Ok((write, submit))
 }
 
@@ -494,7 +493,10 @@ mod tests {
             worked["context"]["guidance_level"], "worked",
             "a failed node was not shown the solution"
         );
-        assert_eq!(worked["write"]["task_toml"]["task"]["guidance_level"], "worked");
+        assert_eq!(
+            worked["write"]["task_toml"]["task"]["guidance_level"],
+            "worked"
+        );
 
         g.state.unknown.remove("b");
         g.state.known.insert("b".to_string());
@@ -524,7 +526,14 @@ mod tests {
         );
 
         let mut state = g.state.clone();
-        assess::record(&g, &mut state, "b", Verdict::Skip, "why is this wrong?", "t0");
+        assess::record(
+            &g,
+            &mut state,
+            "b",
+            Verdict::Skip,
+            "why is this wrong?",
+            "t0",
+        );
         g.state = state;
         let o = build(&g, OrderKind::Probe, "b", 1).expect("no order");
         assert_eq!(o["write"]["rejected"], "why is this wrong?");
@@ -577,8 +586,14 @@ mod tests {
 
         g.nodes[1].kind = Kind::Fact;
         let err = build(&g, OrderKind::Exercise, "b", 1).expect_err("graded a bare fact");
-        assert!(err.contains("fact"), "the refusal does not say what b is: {err}");
-        assert!(err.contains("cards"), "the refusal offers no way forward: {err}");
+        assert!(
+            err.contains("fact"),
+            "the refusal does not say what b is: {err}"
+        );
+        assert!(
+            err.contains("cards"),
+            "the refusal offers no way forward: {err}"
+        );
     }
 
     #[test]
@@ -599,14 +614,19 @@ mod tests {
                 "{kind:?} order has no way to hand the work back: {:?}",
                 o["submit"]
             );
-            assert!(o["write"]["rules"].as_array().is_some_and(|r| !r.is_empty()));
+            assert!(o["write"]["rules"]
+                .as_array()
+                .is_some_and(|r| !r.is_empty()));
         }
     }
 
     #[test]
     fn the_task_template_nests_metadata_the_way_task_toml_does() {
         let t = exercise_write(&exercisable_chain())["task_toml"].clone();
-        assert_eq!(t["schema_version"], "1", "schema_version belongs at the root");
+        assert_eq!(
+            t["schema_version"], "1",
+            "schema_version belongs at the root"
+        );
         assert_eq!(t["task"]["concept_id"], "b");
         assert_eq!(t["task"]["guidance_level"], "faded");
         assert!(t["task"]["id"].is_string(), "the task needs its own id");
@@ -622,23 +642,29 @@ mod tests {
     #[test]
     fn the_task_template_parses_through_the_real_exercise_loader() {
         let t = exercise_write(&exercisable_chain())["task_toml"].clone();
-        let dir = std::env::temp_dir()
-            .join(format!("benkyou-order-template-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("benkyou-order-template-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");
         let text = toml::to_string(&t).expect("the template is not serialisable as TOML");
         std::fs::write(dir.join("task.toml"), &text).expect("write task.toml");
 
-        let task = crate::exercise::load(&dir)
-            .unwrap_or_else(|e| panic!("the template the agent transcribes does not parse: {e}\n{text}"));
+        let task = crate::exercise::load(&dir).unwrap_or_else(|e| {
+            panic!("the template the agent transcribes does not parse: {e}\n{text}")
+        });
         assert_eq!(task.schema_version, "1");
         assert_eq!(task.task.concept_id, "b");
         assert_eq!(task.task.guidance_level, crate::exercise::Guidance::Faded);
         assert_eq!(task.task.kind, crate::exercise::Kind::Kata);
         assert_eq!(task.verify.must_pass, ["correctness"]);
-        assert_eq!(task.limits.learner_secs, 600, "the template's limits, not the defaults");
+        assert_eq!(
+            task.limits.learner_secs, 600,
+            "the template's limits, not the defaults"
+        );
         assert!(
-            crate::exercise::read_gate(&dir).expect("read gate").is_none(),
+            crate::exercise::read_gate(&dir)
+                .expect("read gate")
+                .is_none(),
             "a template arrives ungated"
         );
 
@@ -657,10 +683,16 @@ mod tests {
 
         let mut by_title = exercisable_chain();
         by_title.nodes[1].title = "Window functions in SQL".to_string();
-        assert!(dialect(&by_title), "the node says SQL and the rule was withheld");
+        assert!(
+            dialect(&by_title),
+            "the node says SQL and the rule was withheld"
+        );
 
         let mut by_goal = exercisable_chain();
         by_goal.goal.target = "analytics with PostgreSQL".to_string();
-        assert!(dialect(&by_goal), "every node under a SQL goal may be a SQL exercise");
+        assert!(
+            dialect(&by_goal),
+            "every node under a SQL goal may be a SQL exercise"
+        );
     }
 }

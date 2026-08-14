@@ -429,9 +429,11 @@ impl Graph {
 
     /// True when every member's `requires`-ancestors are also members.
     pub fn is_downward_closed(&self, known: &BTreeSet<NodeId>) -> bool {
-        known
-            .iter()
-            .all(|id| self.requires_ancestors(id).iter().all(|a| known.contains(a)))
+        known.iter().all(|id| {
+            self.requires_ancestors(id)
+                .iter()
+                .all(|a| known.contains(a))
+        })
     }
 
     /// `known` plus the `requires`-ancestors of everything in it. This closure is
@@ -1028,7 +1030,10 @@ mod tests {
     fn fringes_are_sorted_and_independent_of_node_insertion_order() {
         // Twelve independent roots, inserted in descending id order. A HashMap-ordered
         // implementation will vary run to run; the contract is ascending node id.
-        let mut nodes: Vec<Node> = (1..=12).rev().map(|i| node(&format!("n{i:02}"), 7, 1.0)).collect();
+        let mut nodes: Vec<Node> = (1..=12)
+            .rev()
+            .map(|i| node(&format!("n{i:02}"), 7, 1.0))
+            .collect();
         nodes.push(node("t", 1, 1.0));
         let edges: Vec<Edge> = (1..=12).map(|i| req(&format!("n{i:02}"), "t")).collect();
         let g = graph(nodes, edges);
@@ -1199,7 +1204,10 @@ mod tests {
                 req("e", "t"),
             ],
         );
-        assert_eq!(g.plan("t", &set(&[]), 21), ids(&["a", "b", "d", "e", "c", "t"]));
+        assert_eq!(
+            g.plan("t", &set(&[]), 21),
+            ids(&["a", "b", "d", "e", "c", "t"])
+        );
         assert_eq!(g.plan("t", &set(&[]), 20), ids(&["a", "b", "d", "e", "c"]));
         // 12: d (6) does not fit after a+b = 7, so e is ineligible, but c (2) does.
         assert_eq!(g.plan("t", &set(&[]), 12), ids(&["a", "b", "c"]));
@@ -1380,7 +1388,10 @@ mod tests {
                 edge("b", "a", EdgeType::Requires, 0.2),
             ]]
         );
-        assert_eq!(g.edges, before, "a reported cycle must cost the graph nothing");
+        assert_eq!(
+            g.edges, before,
+            "a reported cycle must cost the graph nothing"
+        );
         assert!(!report.is_clean());
     }
 
@@ -1545,7 +1556,7 @@ mod tests {
             vec![
                 node("a", 10, 0.9),
                 node("b", 10, 0.8),
-                node("a", 99, 0.9),  // duplicate
+                node("a", 99, 0.9),     // duplicate
                 node("junk", 10, 0.05), // below floor
                 node("c", 10, 0.7),
             ],
@@ -1561,10 +1572,7 @@ mod tests {
         assert_eq!(dropped(&report.duplicate_nodes), ids(&["a"]));
         assert_eq!(dropped(&report.dropped_irrelevant), ids(&["junk"]));
         assert_eq!(dropped(&report.dropped_over_cap), ids(&[]));
-        assert_eq!(
-            report.dangling_edges,
-            vec![req("junk", "b"), req("b", "b")]
-        );
+        assert_eq!(report.dangling_edges, vec![req("junk", "b"), req("b", "b")]);
         // The cycle is reported whole and left in the file; every other repair here
         // is mechanical and still applied around it.
         assert_eq!(report.cycles.len(), 1);
@@ -1589,7 +1597,10 @@ mod tests {
         assert!(second.dropped_irrelevant.is_empty());
         assert!(second.dropped_over_cap.is_empty());
         assert!(second.dangling_edges.is_empty());
-        assert_eq!(second.cycles, report.cycles, "the cycle stopped being named");
+        assert_eq!(
+            second.cycles, report.cycles,
+            "the cycle stopped being named"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -1670,7 +1681,11 @@ mod tests {
         let mut first = build();
         let first_report = first.validate(0.3, 150);
         assert_eq!(first_report.cycles.len(), 1, "one cycle, reported once");
-        assert_eq!(first.edges.len(), 3, "a NaN confidence still costs no edges");
+        assert_eq!(
+            first.edges.len(),
+            3,
+            "a NaN confidence still costs no edges"
+        );
 
         let mut second = build();
         let second_report = second.validate(0.3, 150);

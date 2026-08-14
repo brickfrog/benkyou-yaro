@@ -56,7 +56,12 @@ impl Default for Sha256 {
 
 impl Sha256 {
     pub fn new() -> Self {
-        Sha256 { h: H0, buf: [0; 64], buffered: 0, bits: 0 }
+        Sha256 {
+            h: H0,
+            buf: [0; 64],
+            buffered: 0,
+            bits: 0,
+        }
     }
 
     pub fn update(&mut self, mut data: &[u8]) {
@@ -291,7 +296,10 @@ fn walk(dir: &Path, prefix: &str, out: &mut Vec<(String, u8, Vec<u8>)>) -> Resul
             let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             out.push((rel, executable(&meta), bytes));
         } else {
-            return Err(format!("{}: not a regular file or directory", path.display()));
+            return Err(format!(
+                "{}: not a regular file or directory",
+                path.display()
+            ));
         }
     }
     Ok(())

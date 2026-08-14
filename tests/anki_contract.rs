@@ -25,7 +25,12 @@ fn card(concept: &str, role: Role, front: &str, back: &str) -> Card {
 /// lands as a new note and its review history is discarded.
 #[test]
 fn note_identity_survives_an_edit_to_the_card_text() {
-    let before = card("pandas_groupby", Role::Definition, "What is groupby?", "Splits.");
+    let before = card(
+        "pandas_groupby",
+        Role::Definition,
+        "What is groupby?",
+        "Splits.",
+    );
     let after = card(
         "pandas_groupby",
         Role::Definition,
@@ -46,7 +51,12 @@ fn note_identity_survives_an_edit_to_the_card_text() {
 /// Different roles on one concept, and one role across concepts, are distinct notes.
 #[test]
 fn identity_separates_roles_and_concepts() {
-    let roles = [Role::Definition, Role::Application, Role::Contrast, Role::Cloze];
+    let roles = [
+        Role::Definition,
+        Role::Application,
+        Role::Contrast,
+        Role::Cloze,
+    ];
     let mut seen = std::collections::BTreeSet::new();
     for concept in ["a", "b"] {
         for role in roles {
@@ -64,7 +74,10 @@ fn identity_separates_roles_and_concepts() {
 fn code_markup_survives_sanitization() {
     let out = sanitize("Use <code>df.groupby()</code> then <pre>agg()</pre>");
     assert!(out.contains("<code>"), "code tag was escaped: {out}");
-    assert!(out.contains("</code>"), "closing code tag was escaped: {out}");
+    assert!(
+        out.contains("</code>"),
+        "closing code tag was escaped: {out}"
+    );
     assert!(out.contains("<pre>"), "pre tag was escaped: {out}");
     assert!(!out.contains("&lt;code&gt;"), "{out}");
 }
@@ -76,8 +89,9 @@ fn code_markup_survives_sanitization() {
 /// the word "onerror" as inert text, which is fine.
 #[test]
 fn markup_off_the_allowlist_is_escaped() {
-    const ALLOWED: &[&str] =
-        &["pre", "code", "b", "i", "em", "strong", "br", "ul", "ol", "li"];
+    const ALLOWED: &[&str] = &[
+        "pre", "code", "b", "i", "em", "strong", "br", "ul", "ol", "li",
+    ];
 
     for hostile in [
         "<script>alert(1)</script>",
@@ -92,10 +106,7 @@ fn markup_off_the_allowlist_is_escaped() {
         for (i, _) in out.match_indices('<') {
             let rest = &out[i + 1..];
             let end = rest.find('>').unwrap_or(rest.len());
-            let name = rest[..end]
-                .trim_matches('/')
-                .trim()
-                .to_ascii_lowercase();
+            let name = rest[..end].trim_matches('/').trim().to_ascii_lowercase();
             assert!(
                 ALLOWED.contains(&name.as_str()),
                 "live `<{name}>` survived from {hostile:?} -> {out:?}"
@@ -115,7 +126,10 @@ fn ampersands_and_stray_brackets_are_escaped() {
 /// Anki tags are whitespace-delimited, so a tag with a space silently becomes two.
 #[test]
 fn tags_cannot_split_into_two() {
-    assert_eq!(normalize_tag("bayesian hierarchical models"), "bayesian_hierarchical_models");
+    assert_eq!(
+        normalize_tag("bayesian hierarchical models"),
+        "bayesian_hierarchical_models"
+    );
     assert_eq!(normalize_tag("  padded  "), "padded");
     assert_eq!(normalize_tag("already_fine"), "already_fine");
     assert!(!normalize_tag("a\tb\nc").contains(char::is_whitespace));
@@ -154,7 +168,10 @@ fn a_note_carries_every_field_the_models_declare() {
     for field in ["Front", "Back", "Example", "Concept", "BenkyouGuid"] {
         assert!(note.fields.contains_key(field), "missing field {field}");
     }
-    assert!(note.fields["Example"].contains("<code>"), "example lost its markup");
+    assert!(
+        note.fields["Example"].contains("<code>"),
+        "example lost its markup"
+    );
 }
 
 /// A malformed address is refused before anything is built, and the refusal names the
@@ -172,10 +189,18 @@ fn an_address_that_is_not_host_port_is_refused() {
         "::1:8765",
     ] {
         let err = AnkiConnect::new(bad).expect_err(&format!("{bad} should be refused"));
-        assert!(err.contains(bad), "refusal did not quote the address: {err}");
+        assert!(
+            err.contains(bad),
+            "refusal did not quote the address: {err}"
+        );
     }
 
-    for good in [DEFAULT_ADDR, "localhost:8765", "mac.local:43117", "[::1]:8765"] {
+    for good in [
+        DEFAULT_ADDR,
+        "localhost:8765",
+        "mac.local:43117",
+        "[::1]:8765",
+    ] {
         let client = AnkiConnect::new(good).unwrap_or_else(|e| panic!("{good}: {e}"));
         assert_eq!(client.addr, good);
     }
@@ -205,7 +230,10 @@ fn serve_fake_anki(listener: TcpListener, calls: usize) -> Vec<String> {
         }
         let text = String::from_utf8_lossy(&raw).to_string();
         let body: serde_json::Value = serde_json::from_str(
-            text.split("\r\n\r\n").nth(1).expect("request had a body").trim(),
+            text.split("\r\n\r\n")
+                .nth(1)
+                .expect("request had a body")
+                .trim(),
         )
         .expect("request body was json");
         let action = body["action"].as_str().expect("action").to_string();
@@ -235,7 +263,11 @@ fn serve_fake_anki(listener: TcpListener, calls: usize) -> Vec<String> {
 fn body_len(request: &str) -> Option<usize> {
     request
         .lines()
-        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().to_string()))
+        .find_map(|l| {
+            l.to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .map(|v| v.trim().to_string())
+        })
         .and_then(|v| v.parse().ok())
 }
 
@@ -246,7 +278,10 @@ fn body_len(request: &str) -> Option<usize> {
 fn push_goes_to_the_address_it_was_given() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake anki");
     let addr = listener.local_addr().unwrap().to_string();
-    assert_ne!(addr, DEFAULT_ADDR, "the fake must not be where the default points");
+    assert_ne!(
+        addr, DEFAULT_ADDR,
+        "the fake must not be where the default points"
+    );
 
     let dir = std::env::temp_dir().join(format!("benkyou-anki-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
@@ -289,7 +324,11 @@ fn push_goes_to_the_address_it_was_given() {
     );
 
     let body: serde_json::Value = serde_json::from_str(&stdout).expect("json report");
-    assert_eq!(body["anki_addr"], serde_json::json!(addr), "report named the wrong host");
+    assert_eq!(
+        body["anki_addr"],
+        serde_json::json!(addr),
+        "report named the wrong host"
+    );
     assert_eq!(body["added"].as_array().map(Vec::len), Some(1));
 
     std::fs::remove_dir_all(&dir).ok();
@@ -305,12 +344,20 @@ fn a_dry_run_refuses_an_address_the_push_would_refuse() {
     std::fs::write(&cards, "[]").expect("write cards");
 
     let out = Command::new(env!("CARGO_BIN_EXE_benkyou"))
-        .args(["cards", cards.to_str().unwrap(), "--anki-addr", "http://127.0.0.1:8765"])
+        .args([
+            "cards",
+            cards.to_str().unwrap(),
+            "--anki-addr",
+            "http://127.0.0.1:8765",
+        ])
         .output()
         .expect("run benkyou");
     assert!(!out.status.success(), "a URL was accepted as an address");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("HOST:PORT"), "refusal did not say what was wanted: {stderr}");
+    assert!(
+        stderr.contains("HOST:PORT"),
+        "refusal did not say what was wanted: {stderr}"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

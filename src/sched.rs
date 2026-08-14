@@ -165,10 +165,14 @@ pub fn is_unlocked(graph: &Graph, fluencies: &Fluencies, node: &str, cfg: &Sched
         .iter()
         .filter(|edge| edge.ty == crate::graph::EdgeType::Requires && edge.to == node)
         .all(|edge| {
-            graph.nodes.iter().any(|candidate| candidate.id == edge.from) && {
-                let f = fluency_for(fluencies, &edge.from);
-                f.attempts > 0 && finite_nonnegative(f.mastery) >= cfg.target
-            }
+            graph
+                .nodes
+                .iter()
+                .any(|candidate| candidate.id == edge.from)
+                && {
+                    let f = fluency_for(fluencies, &edge.from);
+                    f.attempts > 0 && finite_nonnegative(f.mastery) >= cfg.target
+                }
         })
 }
 
@@ -524,8 +528,16 @@ mod tests {
         let cfg = config();
         // review_after_days 10, target 1.0: interval is 10 * mastery/target.
         assert_eq!(due_in(&proven(1.0, Some(0)), 0, &cfg), 10);
-        assert_eq!(due_in(&proven(1.0, Some(0)), 10, &cfg), 0, "due exactly on time");
-        assert_eq!(due_in(&proven(1.0, Some(0)), 13, &cfg), -3, "overdue by three");
+        assert_eq!(
+            due_in(&proven(1.0, Some(0)), 10, &cfg),
+            0,
+            "due exactly on time"
+        );
+        assert_eq!(
+            due_in(&proven(1.0, Some(0)), 13, &cfg),
+            -3,
+            "overdue by three"
+        );
         assert_eq!(
             due_in(&proven(1.5, Some(0)), 0, &cfg),
             15,
@@ -578,10 +590,7 @@ mod tests {
 
     #[test]
     fn practisable_covers_below_target_unproven_and_due() {
-        let graph = graph(
-            &["learning", "settled", "credited", "stale"],
-            Vec::new(),
-        );
+        let graph = graph(&["learning", "settled", "credited", "stale"], Vec::new());
         let mut fluencies = Fluencies::new();
         fluencies.insert("learning".into(), proven(0.99, Some(0)));
         fluencies.insert("settled".into(), proven(1.0, Some(0)));
@@ -602,8 +611,14 @@ mod tests {
         let below = reason(&proven(0.5, Some(0)), 0, &cfg).unwrap();
         let unproven = reason(&fluency(1.2, Some(0)), 0, &cfg).unwrap();
         let due = reason(&proven(1.0, Some(-40)), 0, &cfg).unwrap();
-        assert!(below < unproven, "unfinished work outranks an unproven claim");
-        assert!(unproven < due, "an unproven claim outranks a routine re-check");
+        assert!(
+            below < unproven,
+            "unfinished work outranks an unproven claim"
+        );
+        assert!(
+            unproven < due,
+            "an unproven claim outranks a routine re-check"
+        );
         assert!(
             reason(&proven(1.0, Some(0)), 0, &cfg).is_none(),
             "settled concepts are not scheduled"
@@ -626,7 +641,15 @@ mod tests {
             ("bad".into(), proven(1.0, Some(-40))),
         ]);
         assert_eq!(
-            compose_session(&graph, &fluencies, 0, &SchedConfig { session_size: 2, ..cfg })[0],
+            compose_session(
+                &graph,
+                &fluencies,
+                0,
+                &SchedConfig {
+                    session_size: 2,
+                    ..cfg
+                }
+            )[0],
             "bad"
         );
     }

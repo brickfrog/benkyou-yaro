@@ -62,8 +62,7 @@ fn real_graph() -> String {
 /// Counted from the fixture, so editing the graph above cannot fail a test for an
 /// unrelated reason.
 fn real_graph_nodes() -> usize {
-    serde_json::from_str::<serde_json::Value>(&real_graph())
-        .expect("fixture parses")["nodes"]
+    serde_json::from_str::<serde_json::Value>(&real_graph()).expect("fixture parses")["nodes"]
         .as_array()
         .expect("fixture nodes")
         .len()
@@ -81,7 +80,11 @@ fn a_fresh_machine_gets_a_directory_it_can_actually_write_into() {
     assert_eq!(v["goals"].as_array().expect("goals array").len(), 0);
 
     let dir = PathBuf::from(v["dir"].as_str().expect("dir"));
-    assert!(dir.is_dir(), "reported {} but did not create it", dir.display());
+    assert!(
+        dir.is_dir(),
+        "reported {} but did not create it",
+        dir.display()
+    );
 
     // The directory it named is the one a bare goal name resolves to.
     fs::write(dir.join("newjob.json"), real_graph()).expect("agent's first write");
@@ -108,7 +111,10 @@ fn an_unreadable_graph_does_not_hide_the_readable_ones() {
     assert_eq!(goals.len(), 2, "{goals:#?}");
     assert_eq!(goals[0]["name"], "good");
     assert_eq!(goals[0]["nodes"], real_graph_nodes());
-    assert!(goals[0]["unreadable"].is_null(), "healthy goal marked broken");
+    assert!(
+        goals[0]["unreadable"].is_null(),
+        "healthy goal marked broken"
+    );
 
     assert_eq!(goals[1]["name"], "truncated");
     assert!(
@@ -134,7 +140,11 @@ fn an_unreadable_fluency_file_costs_only_the_practice_counts() {
 
     let g = &v["goals"][0];
     assert_eq!(g["name"], "ramp");
-    assert_eq!(g["nodes"], real_graph_nodes(), "the graph half was still readable");
+    assert_eq!(
+        g["nodes"],
+        real_graph_nodes(),
+        "the graph half was still readable"
+    );
     assert!(
         g["fluency_unreadable"].is_string(),
         "the loss was silent: {g:#?}"
@@ -163,13 +173,19 @@ fn a_healthy_store_reports_practice_and_never_lists_the_fluency_sibling() {
     assert!(ok);
     let goals = v["goals"].as_array().unwrap();
     assert_eq!(goals.len(), 1, "the fluency sibling was listed: {goals:#?}");
-    assert_eq!(goals[0]["practised"], 1, "the old key did not survive the rename");
+    assert_eq!(
+        goals[0]["practised"], 1,
+        "the old key did not survive the rename"
+    );
     // Past the ceiling, and last practised at the epoch, so a check is overdue. Two
     // separate facts: reaching the ceiling is not retirement.
     assert_eq!(goals[0]["at_ceiling"], 1);
     assert_eq!(goals[0]["due"], 1);
     assert!(goals[0]["retired"].is_null(), "retirement no longer exists");
-    assert!(goals[0]["fluency_unreadable"].is_null(), "healthy run reported a loss");
+    assert!(
+        goals[0]["fluency_unreadable"].is_null(),
+        "healthy run reported a loss"
+    );
 }
 
 /// `practised` has to mean "sat down to this", not "a record exists". An `encompasses`
@@ -196,5 +212,8 @@ fn credit_from_an_encompasses_edge_is_not_counted_as_practice() {
     assert!(ok);
     let g = &v["goals"][0];
     assert_eq!(g["practised"], 1, "credit was counted as practice: {g:#?}");
-    assert_eq!(g["credited"], 1, "the credited node went unreported: {g:#?}");
+    assert_eq!(
+        g["credited"], 1,
+        "the credited node went unreported: {g:#?}"
+    );
 }

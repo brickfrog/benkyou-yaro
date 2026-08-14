@@ -58,16 +58,20 @@ pub enum Runtime<'a> {
     /// The machine's `/usr/bin/python3`, warmed by the host's `uv`.
     Host,
     /// An image's `python3`, warmed by `pip` inside that image.
-    Image { cli: &'a Path, engine: &'static str, image: &'a crate::run::Image },
+    Image {
+        cli: &'a Path,
+        engine: &'static str,
+        image: &'a crate::run::Image,
+    },
 }
 
 impl<'a> Runtime<'a> {
     /// The runtime the given backend runs a job in.
     pub fn of(backend: &'a Backend) -> Self {
         match backend {
-            Backend::Container { cli, engine, image, .. } => {
-                Runtime::Image { cli, engine, image }
-            }
+            Backend::Container {
+                cli, engine, image, ..
+            } => Runtime::Image { cli, engine, image },
             _ => Runtime::Host,
         }
     }
@@ -105,7 +109,9 @@ fn abi_tag(raw: &str) -> Result<String, String> {
     let shaped = !raw.is_empty()
         && raw.len() <= 128
         && !raw.starts_with(['-', '.'])
-        && raw.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
     if shaped {
         return Ok(raw.to_string());
     }
@@ -124,7 +130,11 @@ fn abi_tag(raw: &str) -> Result<String, String> {
 fn image_abi(cli: &Path, engine: &str, image: &crate::run::Image) -> Result<String, String> {
     static SEEN: LazyLock<Mutex<BTreeMap<String, String>>> =
         LazyLock::new(|| Mutex::new(BTreeMap::new()));
-    if let Some(tag) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(&image.id) {
+    if let Some(tag) = SEEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&image.id)
+    {
         return Ok(tag.clone());
     }
 
@@ -175,7 +185,10 @@ fn image_abi(cli: &Path, engine: &str, image: &crate::run::Image) -> Result<Stri
 /// decide whether a compiled wheel loads.
 static ABI: LazyLock<Result<String, String>> = LazyLock::new(|| {
     let out = Command::new(INTERPRETER)
-        .args(["-c", "import sysconfig;print(sysconfig.get_config_var('SOABI') or 'none')"])
+        .args([
+            "-c",
+            "import sysconfig;print(sysconfig.get_config_var('SOABI') or 'none')",
+        ])
         .output()
         .map_err(|e| format!("{INTERPRETER}: {e}"))?;
     if !out.status.success() {
@@ -210,7 +223,9 @@ pub fn check_spec(spec: &str) -> Result<(), String> {
         return Err("an empty requirement".to_string());
     }
     if s.starts_with('-') {
-        return Err(format!("`{s}`: starts with `-`, which is a flag and not a package"));
+        return Err(format!(
+            "`{s}`: starts with `-`, which is a flag and not a package"
+        ));
     }
     for (bad, why) in [
         ('/', "a path"),
@@ -226,7 +241,9 @@ pub fn check_spec(spec: &str) -> Result<(), String> {
         ('"', "a quote"),
     ] {
         if s.contains(bad) {
-            return Err(format!("`{s}`: contains `{bad}` - {why}. Registry names only."));
+            return Err(format!(
+                "`{s}`: contains `{bad}` - {why}. Registry names only."
+            ));
         }
     }
     if s.chars().any(char::is_whitespace) {
@@ -318,7 +335,10 @@ fn check_name(name: &str) -> Result<(), String> {
     if !ends_ok(bytes[0]) || !ends_ok(bytes[bytes.len() - 1]) {
         return Err(format!("name `{name}` must start and end alphanumeric"));
     }
-    if let Some(bad) = name.chars().find(|c| !c.is_ascii_alphanumeric() && !"-_.".contains(*c)) {
+    if let Some(bad) = name
+        .chars()
+        .find(|c| !c.is_ascii_alphanumeric() && !"-_.".contains(*c))
+    {
         return Err(format!("name `{name}` contains `{bad}`"));
     }
     Ok(())
@@ -333,8 +353,9 @@ fn check_specifier(part: &str) -> Result<(), String> {
     if version.is_empty() {
         return Err(format!("`{part}` has no version"));
     }
-    if let Some(bad) =
-        version.chars().find(|c| !c.is_ascii_alphanumeric() && !".*+!-_".contains(*c))
+    if let Some(bad) = version
+        .chars()
+        .find(|c| !c.is_ascii_alphanumeric() && !".*+!-_".contains(*c))
     {
         return Err(format!("version `{version}` contains `{bad}`"));
     }
@@ -343,8 +364,11 @@ fn check_specifier(part: &str) -> Result<(), String> {
 
 /// Check a whole declaration. Name every problem, not only the first.
 pub fn check(deps: &Deps) -> Result<(), String> {
-    let bad: Vec<String> =
-        deps.python.iter().filter_map(|s| check_spec(s).err()).collect();
+    let bad: Vec<String> = deps
+        .python
+        .iter()
+        .filter_map(|s| check_spec(s).err())
+        .collect();
     if bad.is_empty() {
         return Ok(());
     }
@@ -373,7 +397,10 @@ pub fn digest(python: &[String]) -> String {
 
 /// Host directory holding a warmed set, whether or not it exists yet.
 pub fn set_path(python: &[String], runtime: Runtime) -> Result<PathBuf, String> {
-    Ok(cache_dir()?.join("sets").join(runtime.key()?).join(digest(python)))
+    Ok(cache_dir()?
+        .join("sets")
+        .join(runtime.key()?)
+        .join(digest(python)))
 }
 
 /// The warmed set a declaration needs, or `None` when it declares no packages.
@@ -488,7 +515,9 @@ pub fn warm(deps: &Deps, force: bool, runtime: Runtime) -> Result<Option<Warmed>
 
     // From here on the key is held. The lock protects which resolved tree this key names,
     // not the directory.
-    let parent = path.parent().ok_or_else(|| format!("{}: no parent", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{}: no parent", path.display()))?;
     fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     let _lock = lock_key(&path)?;
 
@@ -563,7 +592,11 @@ pub fn warm(deps: &Deps, force: bool, runtime: Runtime) -> Result<Option<Warmed>
 fn scratch_name(what: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    format!(".{what}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
+    format!(
+        ".{what}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// How long to wait for the warm that holds this key.
@@ -597,7 +630,9 @@ fn lock_key(path: &Path) -> Result<KeyLock, String> {
 
 /// The same, with the wait budget named. Tests use a short one.
 fn lock_key_for(path: &Path, wait: Duration) -> Result<KeyLock, String> {
-    let parent = path.parent().ok_or_else(|| format!("{}: no parent", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{}: no parent", path.display()))?;
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -664,7 +699,9 @@ fn publish(staging: &Path, path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("{}: {first}", path.display()));
     }
-    let parent = path.parent().ok_or_else(|| format!("{}: no parent", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{}: no parent", path.display()))?;
     let aside = parent.join(scratch_name("old"));
     fs::rename(path, &aside).map_err(|e| format!("{}: {e}", path.display()))?;
     if let Err(e) = fs::rename(staging, path) {
@@ -683,9 +720,17 @@ fn publish(staging: &Path, path: &Path) -> Result<(), String> {
 fn install_on_host(specs: &[String], staging: &Path) -> Result<(), String> {
     let uv = which_uv()?;
     let mut cmd = Command::new(&uv);
-    cmd.args(["pip", "install", "--only-binary", ":all:", "--python", INTERPRETER, "--target"])
-        .arg(staging)
-        .args(specs);
+    cmd.args([
+        "pip",
+        "install",
+        "--only-binary",
+        ":all:",
+        "--python",
+        INTERPRETER,
+        "--target",
+    ])
+    .arg(staging)
+    .args(specs);
     let out = cmd.output().map_err(|e| format!("{}: {e}", uv.display()))?;
     if out.status.success() {
         return Ok(());
@@ -733,7 +778,10 @@ fn install_in_image(
     let tmpfs = format!("/tmp:rw,mode=1777,size={}", crate::run::TMP_BYTES);
     let user = format!("{uid}:{gid}");
     let label = format!("{}={}", crate::run::OWNER_LABEL, std::process::id());
-    let mount = format!("type=bind,source={},target=/out", crate::run::mount_source(staging)?);
+    let mount = format!(
+        "type=bind,source={},target=/out",
+        crate::run::mount_source(staging)?
+    );
     let out = engine_run(
         cli,
         &[
@@ -781,7 +829,12 @@ fn install_in_image(
 
 /// The last few lines of an installer's error output, where the reason is.
 fn warming_failed(specs: &[String], err: &str) -> String {
-    let tail: Vec<&str> = err.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
+    let tail: Vec<&str> = err
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(6)
+        .collect();
     format!(
         "warming failed: {}\n{}",
         specs.join(", "),
@@ -799,7 +852,9 @@ fn which_uv() -> Result<PathBuf, String> {
 
 fn which(bin: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).map(|d| d.join(bin)).find(|p| p.is_file())
+        std::env::split_paths(&paths)
+            .map(|d| d.join(bin))
+            .find(|p| p.is_file())
     })
 }
 
@@ -808,7 +863,9 @@ mod tests {
     use super::*;
 
     fn deps(specs: &[&str]) -> Deps {
-        Deps { python: specs.iter().map(|s| s.to_string()).collect() }
+        Deps {
+            python: specs.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
     // -- what is admitted ---------------------------------------------------
@@ -827,7 +884,11 @@ mod tests {
             "pkg==1!2.0",
             "pkg==1.0+local",
         ] {
-            assert!(check_spec(spec).is_ok(), "should admit {spec}: {:?}", check_spec(spec));
+            assert!(
+                check_spec(spec).is_ok(),
+                "should admit {spec}: {:?}",
+                check_spec(spec)
+            );
         }
     }
 
@@ -880,7 +941,14 @@ mod tests {
 
     #[test]
     fn shell_metacharacters_are_refused() {
-        for spec in ["pkg;rm -rf /", "pkg&&curl x", "pkg|sh", "pkg$(id)", "pkg'x", "pkg\"x"] {
+        for spec in [
+            "pkg;rm -rf /",
+            "pkg&&curl x",
+            "pkg|sh",
+            "pkg$(id)",
+            "pkg'x",
+            "pkg\"x",
+        ] {
             assert!(check_spec(spec).is_err(), "must refuse {spec}");
         }
     }
@@ -895,14 +963,22 @@ mod tests {
 
     #[test]
     fn malformed_names_and_versions_are_refused() {
-        for spec in ["-pkg", "pkg-", ".pkg", "pkg==", "pkg=1.0", "pkg<>1", "pkg[", "pkg]", "pkg[]", "påckage"] {
+        for spec in [
+            "-pkg", "pkg-", ".pkg", "pkg==", "pkg=1.0", "pkg<>1", "pkg[", "pkg]", "pkg[]",
+            "påckage",
+        ] {
             assert!(check_spec(spec).is_err(), "must refuse {spec}");
         }
     }
 
     #[test]
     fn a_whole_declaration_names_every_problem() {
-        let err = check(&deps(&["pandas==3.0.5", "./bad", "git+https://x.invalid/y"])).unwrap_err();
+        let err = check(&deps(&[
+            "pandas==3.0.5",
+            "./bad",
+            "git+https://x.invalid/y",
+        ]))
+        .unwrap_err();
         assert!(err.contains("./bad"), "{err}");
         assert!(err.contains("git+"), "{err}");
     }
@@ -915,9 +991,20 @@ mod tests {
     /// The check guards the network command, so it runs before it.
     #[test]
     fn warming_refuses_a_bad_spec_without_touching_the_network() {
-        let err = warm(&deps(&["git+https://example.invalid/x"]), false, Runtime::Host).unwrap_err();
-        assert!(err.contains("git+https://example.invalid/x"), "must name the spec: {err}");
-        assert!(err.contains("Registry names only"), "must say what is allowed: {err}");
+        let err = warm(
+            &deps(&["git+https://example.invalid/x"]),
+            false,
+            Runtime::Host,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("git+https://example.invalid/x"),
+            "must name the spec: {err}"
+        );
+        assert!(
+            err.contains("Registry names only"),
+            "must say what is allowed: {err}"
+        );
     }
 
     #[test]
@@ -947,7 +1034,10 @@ mod tests {
     /// Without length prefixes these two collide, and two exercises share one directory.
     #[test]
     fn concatenation_is_not_ambiguous() {
-        assert_ne!(digest(&deps(&["ab", "c"]).python), digest(&deps(&["a", "bc"]).python));
+        assert_ne!(
+            digest(&deps(&["ab", "c"]).python),
+            digest(&deps(&["a", "bc"]).python)
+        );
     }
 
     #[test]
@@ -961,8 +1051,12 @@ mod tests {
     #[test]
     fn an_empty_declaration_needs_nothing() {
         let none = Deps::default();
-        assert!(require(&none, Runtime::Host).expect("no deps is not an error").is_none());
-        assert!(warm(&none, false, Runtime::Host).expect("nothing to warm").is_none());
+        assert!(require(&none, Runtime::Host)
+            .expect("no deps is not an error")
+            .is_none());
+        assert!(warm(&none, false, Runtime::Host)
+            .expect("nothing to warm")
+            .is_none());
     }
 
     // -- the manifest is the set's identity --------------------------------
@@ -996,7 +1090,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("dir");
         fs::write(dir.join(RESOLVED), r#"["numpy==2.5.1","pandas==3.0.5"]"#).expect("write");
-        assert_eq!(resolved(&dir).expect("reads"), vec!["numpy==2.5.1", "pandas==3.0.5"]);
+        assert_eq!(
+            resolved(&dir).expect("reads"),
+            vec!["numpy==2.5.1", "pandas==3.0.5"]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1008,7 +1105,10 @@ mod tests {
         for d in ["pandas-3.0.5.dist-info", "numpy-2.5.1.dist-info", "pandas"] {
             fs::create_dir_all(dir.join(d)).expect("dir");
         }
-        assert_eq!(installed(&dir).expect("reads"), vec!["numpy==2.5.1", "pandas==3.0.5"]);
+        assert_eq!(
+            installed(&dir).expect("reads"),
+            vec!["numpy==2.5.1", "pandas==3.0.5"]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1036,14 +1136,24 @@ mod tests {
             long.as_str(),
         ] {
             let err = abi_tag(raw).expect_err("must refuse {raw:?}");
-            assert!(err.contains("--image"), "must name what to change for {raw:?}: {err}");
-            assert!(err.contains(&format!("{raw:?}")), "must show the value: {err}");
+            assert!(
+                err.contains("--image"),
+                "must name what to change for {raw:?}: {err}"
+            );
+            assert!(
+                err.contains(&format!("{raw:?}")),
+                "must show the value: {err}"
+            );
         }
     }
 
     #[test]
     fn a_real_abi_tag_passes_through_unchanged() {
-        for raw in ["cpython-313-x86_64-linux-gnu", "cpython-314t-aarch64-linux-gnu", "none"] {
+        for raw in [
+            "cpython-313-x86_64-linux-gnu",
+            "cpython-314t-aarch64-linux-gnu",
+            "none",
+        ] {
             assert_eq!(abi_tag(raw).expect("a real tag"), raw);
         }
     }
@@ -1065,12 +1175,19 @@ mod tests {
 
         publish(&staging, &path).expect("publishes over an existing set");
 
-        assert_eq!(resolved(&path).expect("the new manifest is readable"), vec!["new==2.0"]);
+        assert_eq!(
+            resolved(&path).expect("the new manifest is readable"),
+            vec!["new==2.0"]
+        );
         let left: Vec<String> = fs::read_dir(&root)
             .expect("read")
             .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(left, vec!["0123456789abcdef".to_string()], "leftovers: {left:?}");
+        assert_eq!(
+            left,
+            vec!["0123456789abcdef".to_string()],
+            "leftovers: {left:?}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1087,7 +1204,10 @@ mod tests {
         publish(&staging, &path).expect("publishes into an empty parent");
 
         assert_eq!(resolved(&path).expect("manifest"), vec!["new==2.0"]);
-        assert!(!staging.exists(), "the staging directory was renamed, not copied");
+        assert!(
+            !staging.exists(),
+            "the staging directory was renamed, not copied"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1104,12 +1224,19 @@ mod tests {
         // Nothing to publish. Whatever else this does, it must not delete the set.
         publish(&root.join(scratch_name("tmp")), &path).expect_err("there is no staging dir");
 
-        assert_eq!(resolved(&path).expect("the old manifest still reads"), vec!["old==1.0"]);
+        assert_eq!(
+            resolved(&path).expect("the old manifest still reads"),
+            vec!["old==1.0"]
+        );
         let left: Vec<String> = fs::read_dir(&root)
             .expect("read")
             .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(left, vec!["0123456789abcdef".to_string()], "leftovers: {left:?}");
+        assert_eq!(
+            left,
+            vec!["0123456789abcdef".to_string()],
+            "leftovers: {left:?}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1127,13 +1254,21 @@ mod tests {
         fs::write(staging.join(RESOLVED), r#"["second==1.0"]"#).expect("write");
 
         let existing = published_meanwhile(&staging, &path).expect("the published set wins");
-        assert_eq!(existing, vec!["first==1.0"], "the reported set is the one on disk");
+        assert_eq!(
+            existing,
+            vec!["first==1.0"],
+            "the reported set is the one on disk"
+        );
         assert_eq!(resolved(&path).expect("untouched"), vec!["first==1.0"]);
         let left: Vec<String> = fs::read_dir(&root)
             .expect("read")
             .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(left, vec!["0123456789abcdef".to_string()], "leftovers: {left:?}");
+        assert_eq!(
+            left,
+            vec!["0123456789abcdef".to_string()],
+            "leftovers: {left:?}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1149,7 +1284,10 @@ mod tests {
         fs::create_dir_all(&staging).expect("dir");
         fs::write(staging.join(RESOLVED), r#"["new==2.0"]"#).expect("write");
 
-        assert!(published_meanwhile(&staging, &path).is_none(), "an unidentifiable set");
+        assert!(
+            published_meanwhile(&staging, &path).is_none(),
+            "an unidentifiable set"
+        );
         assert!(staging.exists(), "the staging directory is still needed");
         publish(&staging, &path).expect("replaces the unreadable directory");
         assert_eq!(resolved(&path).expect("manifest"), vec!["new==2.0"]);
@@ -1196,8 +1334,14 @@ mod tests {
     fn a_fresh_lock_is_not_stale() {
         let path = key_dir("fresh");
         let lock = lock_key_for(&path, Duration::from_millis(10)).expect("first writer");
-        assert!(!held_too_long(&lock.dir), "a lock made now was called a leftover");
-        assert!(held_too_long(&path.with_extension("missing")), "an absent lock reads as old");
+        assert!(
+            !held_too_long(&lock.dir),
+            "a lock made now was called a leftover"
+        );
+        assert!(
+            held_too_long(&path.with_extension("missing")),
+            "an absent lock reads as old"
+        );
         drop(lock);
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }

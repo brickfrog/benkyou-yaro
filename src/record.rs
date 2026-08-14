@@ -221,10 +221,8 @@ mod tests {
     const AT: &str = "1970-01-01T00:00:00Z";
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "benkyou-record-{}-{name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("benkyou-record-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("work")).expect("scratch");
         dir
@@ -336,10 +334,11 @@ mod tests {
         let work = root.join("work");
 
         let mut first = Recorder::open(&work).unwrap();
-        first.log(Event::Open {
-            exercise: "dedupe".to_string(),
-        })
-        .unwrap();
+        first
+            .log(Event::Open {
+                exercise: "dedupe".to_string(),
+            })
+            .unwrap();
         drop(first);
 
         // A separate recorder over the same workspace stands in for the session after a

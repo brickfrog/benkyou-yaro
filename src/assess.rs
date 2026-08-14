@@ -26,7 +26,10 @@ impl Default for AssessConfig {
         // to spend an hour studying it. So the floor only exists to stop asking
         // about nodes that are already resolved, which score 0.0 — anything
         // unresolved scores at least 1.0 because it always resolves itself.
-        Self { max_questions: 30, min_gain: 1.0 }
+        Self {
+            max_questions: 30,
+            min_gain: 1.0,
+        }
     }
 }
 
@@ -81,11 +84,17 @@ pub fn gain(graph: &Graph, state: &State, node: &str) -> f32 {
 
     let mut on_pass = graph.requires_ancestors(node);
     on_pass.insert(node.to_string());
-    let resolved_by_pass = on_pass.iter().filter(|id| !state.known.contains(*id)).count();
+    let resolved_by_pass = on_pass
+        .iter()
+        .filter(|id| !state.known.contains(*id))
+        .count();
 
     let mut on_fail = graph.requires_descendants(node);
     on_fail.insert(node.to_string());
-    let resolved_by_fail = on_fail.iter().filter(|id| !state.unknown.contains(*id)).count();
+    let resolved_by_fail = on_fail
+        .iter()
+        .filter(|id| !state.unknown.contains(*id))
+        .count();
 
     p * resolved_by_pass as f32 + (1.0 - p) * resolved_by_fail as f32
 }
@@ -256,8 +265,7 @@ pub fn record(
         .evidence
         .iter()
         .any(|e| e.node == node && e.verdict == Verdict::Fail);
-    let contradicted =
-        verdict == Verdict::Fail && passing_descendants >= 2 && !already_re_asked;
+    let contradicted = verdict == Verdict::Fail && passing_descendants >= 2 && !already_re_asked;
 
     state.evidence.push(Evidence {
         node: node.to_string(),
@@ -341,11 +349,7 @@ fn mark_known(state: &mut State, cone: BTreeSet<NodeId>) {
 /// caller can report a graph/prior mismatch. Values are clamped to 0.0..=1.0, and
 /// `NaN` is replaced with [`DEFAULT_BELIEF`]. Nodes already resolved in `known` or
 /// `unknown` are not overwritten — evidence beats a prior, always.
-pub fn seed_prior(
-    graph: &Graph,
-    state: &mut State,
-    prior: &[(NodeId, f32)],
-) -> Vec<NodeId> {
+pub fn seed_prior(graph: &Graph, state: &mut State, prior: &[(NodeId, f32)]) -> Vec<NodeId> {
     let mut missing: Vec<NodeId> = Vec::new();
     for (id, p) in prior {
         if !graph.contains(id) {
@@ -355,7 +359,11 @@ pub fn seed_prior(
         if state.known.contains(id) || state.unknown.contains(id) {
             continue;
         }
-        let p = if p.is_nan() { DEFAULT_BELIEF } else { p.clamp(0.0, 1.0) };
+        let p = if p.is_nan() {
+            DEFAULT_BELIEF
+        } else {
+            p.clamp(0.0, 1.0)
+        };
         state.belief.insert(id.clone(), p);
     }
     missing
@@ -486,7 +494,12 @@ pub fn declare(
     let (conflicts, primed) = claimed
         .into_iter()
         .partition(|id| state.unknown.contains(id));
-    Declaration { missing, conflicts, primed, retracted }
+    Declaration {
+        missing,
+        conflicts,
+        primed,
+        retracted,
+    }
 }
 
 #[cfg(test)]
@@ -601,7 +614,10 @@ mod tests {
     }
 
     fn cfg(max_questions: usize, min_gain: f32) -> AssessConfig {
-        AssessConfig { max_questions, min_gain }
+        AssessConfig {
+            max_questions,
+            min_gain,
+        }
     }
 
     fn ask(step: Step) -> Question {
@@ -669,12 +685,10 @@ mod tests {
                     );
                     order.push(q.node.clone());
                     let verdict = answer(&q.node);
-                    let outcome =
-                        record(g, &mut state, &q.node, verdict.clone(), &q.probe, "t0");
+                    let outcome = record(g, &mut state, &q.node, verdict.clone(), &q.probe, "t0");
                     assert_invariants(g, &state);
                     if outcome == RecordOutcome::ReAsk {
-                        let second =
-                            record(g, &mut state, &q.node, verdict, &q.probe, "t1");
+                        let second = record(g, &mut state, &q.node, verdict, &q.probe, "t1");
                         assert_eq!(
                             second,
                             RecordOutcome::Applied,
@@ -745,7 +759,10 @@ mod tests {
     #[test]
     fn gain_counts_both_cones_at_the_default_belief() {
         // a -> b, a -> c, b -> d, c -> d.
-        let g = graph(&["a", "b", "c", "d"], &[("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")]);
+        let g = graph(
+            &["a", "b", "c", "d"],
+            &[("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")],
+        );
         let s = State::default();
         // 0.5 * |{a, b, c, d}| + 0.5 * |{d}|
         assert_eq!(gain(&g, &s, "d"), 2.5);
@@ -848,7 +865,12 @@ mod tests {
         // other, which at the default belief is worth strictly less.
         let g = graph(
             &["aa1", "aa2", "mid", "zz1", "zz2"],
-            &[("aa1", "mid"), ("aa2", "mid"), ("mid", "zz1"), ("mid", "zz2")],
+            &[
+                ("aa1", "mid"),
+                ("aa2", "mid"),
+                ("mid", "zz1"),
+                ("mid", "zz2"),
+            ],
         );
         let s = State::default();
         assert_eq!(gain(&g, &s, "mid"), 3.0);
@@ -878,8 +900,15 @@ mod tests {
         assert_eq!(q.gain, 3.0);
         // Uniform at a belief other than 0.5 tilts the whole chain one way, so the
         // extreme wins on gain outright and no tie-break is involved.
-        let low = state_of(&[], &[], &[("a", 0.9), ("b", 0.9), ("c", 0.9), ("d", 0.9), ("e", 0.9)]);
-        assert_eq!(ask(next_step(&g, &low, &BTreeSet::new(), &cfg(30, 2.0))).node, "e");
+        let low = state_of(
+            &[],
+            &[],
+            &[("a", 0.9), ("b", 0.9), ("c", 0.9), ("d", 0.9), ("e", 0.9)],
+        );
+        assert_eq!(
+            ask(next_step(&g, &low, &BTreeSet::new(), &cfg(30, 2.0))).node,
+            "e"
+        );
     }
 
     #[test]
@@ -898,12 +927,21 @@ mod tests {
         // Symmetric on the other side of 0.5, and the tie-break is on distance from
         // 0.5, not on the belief itself: 0.4 beats 0.9.
         let s = state_of(&[], &[], &[("aa", 0.9), ("bb", 0.4)]);
-        assert_eq!(ask(next_step(&g, &s, &BTreeSet::new(), &cfg(30, 0.5))).node, "bb");
+        assert_eq!(
+            ask(next_step(&g, &s, &BTreeSet::new(), &cfg(30, 0.5))).node,
+            "bb"
+        );
         let s = state_of(&[], &[], &[("aa", 0.4), ("bb", 0.9)]);
-        assert_eq!(ask(next_step(&g, &s, &BTreeSet::new(), &cfg(30, 0.5))).node, "aa");
+        assert_eq!(
+            ask(next_step(&g, &s, &BTreeSet::new(), &cfg(30, 0.5))).node,
+            "aa"
+        );
         // Equal distance on both sides falls through to the node id.
         let s = state_of(&[], &[], &[("aa", 0.75), ("bb", 0.25)]);
-        assert_eq!(ask(next_step(&g, &s, &BTreeSet::new(), &cfg(30, 0.5))).node, "aa");
+        assert_eq!(
+            ask(next_step(&g, &s, &BTreeSet::new(), &cfg(30, 0.5))).node,
+            "aa"
+        );
     }
 
     #[test]
@@ -916,16 +954,28 @@ mod tests {
         assert_eq!(q.gain, 1.0);
         // A node with no belief entry at all behaves the same way.
         let s = state_of(&[], &[], &[("aa", 0.9)]);
-        assert_eq!(ask(next_step(&g, &s, &BTreeSet::new(), &cfg(30, 0.5))).node, "bb");
+        assert_eq!(
+            ask(next_step(&g, &s, &BTreeSet::new(), &cfg(30, 0.5))).node,
+            "bb"
+        );
     }
 
     #[test]
     fn the_question_carries_the_node_probe_and_its_gain() {
         let g = single();
-        let q = ask(next_step(&g, &State::default(), &BTreeSet::new(), &cfg(30, 1.0)));
+        let q = ask(next_step(
+            &g,
+            &State::default(),
+            &BTreeSet::new(),
+            &cfg(30, 1.0),
+        ));
         assert_eq!(
             q,
-            Question { node: "a".to_string(), probe: "probe for a".to_string(), gain: 1.0 }
+            Question {
+                node: "a".to_string(),
+                probe: "probe for a".to_string(),
+                gain: 1.0
+            }
         );
     }
 
@@ -949,7 +999,14 @@ mod tests {
         let s = state_of(
             &[],
             &[],
-            &[("a", f32::NAN), ("b", 5.0), ("c", -2.0), ("d", 0.5), ("e", 1.5), ("ghost", f32::NAN)],
+            &[
+                ("a", f32::NAN),
+                ("b", 5.0),
+                ("c", -2.0),
+                ("d", 0.5),
+                ("e", 1.5),
+                ("ghost", f32::NAN),
+            ],
         );
         let first = next_step(&g, &s, &BTreeSet::new(), &cfg(30, 0.5));
         for _ in 0..8 {
@@ -1014,7 +1071,13 @@ mod tests {
         );
         // A floor exactly at the best gain does not stop: the test is `<`.
         assert_eq!(
-            ask(next_step(&g, &State::default(), &BTreeSet::new(), &cfg(30, 1.0))).node,
+            ask(next_step(
+                &g,
+                &State::default(),
+                &BTreeSet::new(),
+                &cfg(30, 1.0)
+            ))
+            .node,
             "a"
         );
 
@@ -1048,15 +1111,30 @@ mod tests {
         );
 
         let g = single();
-        let q = ask(next_step(&g, &State::default(), &BTreeSet::new(), &cfg(30, 0.5)));
+        let q = ask(next_step(
+            &g,
+            &State::default(),
+            &BTreeSet::new(),
+            &cfg(30, 0.5),
+        ));
         assert_eq!(q.node, "a");
         assert_eq!(q.gain, 1.0);
         assert_eq!(
-            next_step(&g, &state_of(&["a"], &[], &[]), &BTreeSet::new(), &cfg(30, 0.5)),
+            next_step(
+                &g,
+                &state_of(&["a"], &[], &[]),
+                &BTreeSet::new(),
+                &cfg(30, 0.5)
+            ),
             Step::Stop(StopReason::Complete)
         );
         assert_eq!(
-            next_step(&g, &state_of(&[], &["a"], &[]), &BTreeSet::new(), &cfg(30, 0.5)),
+            next_step(
+                &g,
+                &state_of(&[], &["a"], &[]),
+                &BTreeSet::new(),
+                &cfg(30, 0.5)
+            ),
             Step::Stop(StopReason::Complete)
         );
     }
@@ -1064,7 +1142,12 @@ mod tests {
     #[test]
     fn next_step_terminates_on_a_cycle_that_survived_validation() {
         let g = graph(&["a", "b", "c"], &[("a", "b"), ("b", "c"), ("c", "a")]);
-        let q = ask(next_step(&g, &State::default(), &BTreeSet::new(), &cfg(30, 2.0)));
+        let q = ask(next_step(
+            &g,
+            &State::default(),
+            &BTreeSet::new(),
+            &cfg(30, 2.0),
+        ));
         // Every node reaches every other in both directions: a flat 3.0 tie.
         assert_eq!(q.gain, 3.0);
         assert_eq!(q.node, "a");
@@ -1078,7 +1161,14 @@ mod tests {
     fn pass_marks_the_whole_ancestor_cone_known_in_one_call() {
         let g = chain(&["a", "b", "c", "d", "e"]);
         let mut s = State::default();
-        let outcome = record(&g, &mut s, "d", Verdict::Pass, "how do you d?", "2026-08-05");
+        let outcome = record(
+            &g,
+            &mut s,
+            "d",
+            Verdict::Pass,
+            "how do you d?",
+            "2026-08-05",
+        );
         assert_eq!(outcome, RecordOutcome::Applied);
         assert_eq!(s.known, set(&["a", "b", "c", "d"]));
         // The other direction is untouched: `e` is harder than what was proved.
@@ -1101,7 +1191,14 @@ mod tests {
     fn fail_marks_the_whole_descendant_cone_unknown_in_one_call() {
         let g = chain(&["a", "b", "c", "d", "e"]);
         let mut s = State::default();
-        let outcome = record(&g, &mut s, "b", Verdict::Fail, "how do you b?", "2026-08-05");
+        let outcome = record(
+            &g,
+            &mut s,
+            "b",
+            Verdict::Fail,
+            "how do you b?",
+            "2026-08-05",
+        );
         assert_eq!(outcome, RecordOutcome::Applied);
         assert_eq!(s.unknown, set(&["b", "c", "d", "e"]));
         // The other direction is untouched: `a` is easier than what was failed.
@@ -1125,7 +1222,10 @@ mod tests {
         let outcome = record(&g, &mut s, "d", Verdict::Partial, "how do you d?", "t");
         assert_eq!(outcome, RecordOutcome::Applied);
         assert_eq!(s.known, set(&["a", "b", "c"]));
-        assert!(!s.known.contains("d"), "PARTIAL put the node itself in known");
+        assert!(
+            !s.known.contains("d"),
+            "PARTIAL put the node itself in known"
+        );
         assert!(!s.unknown.contains("d"), "PARTIAL put the node in unknown");
         assert!(s.unknown.is_empty());
         for id in ["a", "b", "c"] {
@@ -1150,9 +1250,16 @@ mod tests {
         // Entry state deliberately violates disjointness: `a` is in both.
         let g = chain(&["a", "b", "c"]);
         let mut s = state_of(&["a", "b"], &["a", "c"], &[]);
-        assert_eq!(record(&g, &mut s, "b", Verdict::Pass, "p", "t"), RecordOutcome::Applied);
+        assert_eq!(
+            record(&g, &mut s, "b", Verdict::Pass, "p", "t"),
+            RecordOutcome::Applied
+        );
         assert_eq!(s.known, set(&["a", "b"]));
-        assert_eq!(s.unknown, set(&["c"]), "PASS did not evict its cone from unknown");
+        assert_eq!(
+            s.unknown,
+            set(&["c"]),
+            "PASS did not evict its cone from unknown"
+        );
         assert_invariants(&g, &s);
 
         // ...and the other way: failing out of a fully-known chain.
@@ -1160,9 +1267,16 @@ mod tests {
         let mut s = state_of(&["a", "b", "c", "d", "e"], &[], &[]);
         // The evidence log is empty, so the careless-error rule does not fire here:
         // it counts recorded PASS verdicts, not membership of `known`.
-        assert_eq!(record(&g, &mut s, "c", Verdict::Fail, "p", "t"), RecordOutcome::Applied);
+        assert_eq!(
+            record(&g, &mut s, "c", Verdict::Fail, "p", "t"),
+            RecordOutcome::Applied
+        );
         assert_eq!(s.unknown, set(&["c", "d", "e"]));
-        assert_eq!(s.known, set(&["a", "b"]), "FAIL did not evict its cone from known");
+        assert_eq!(
+            s.known,
+            set(&["a", "b"]),
+            "FAIL did not evict its cone from known"
+        );
         for id in ["c", "d", "e"] {
             assert_eq!(s.belief.get(id), Some(&0.0));
         }
@@ -1173,9 +1287,16 @@ mod tests {
     fn partial_evicts_its_ancestors_from_unknown() {
         let g = chain(&["a", "b", "c"]);
         let mut s = state_of(&[], &["a"], &[("a", 0.0)]);
-        assert_eq!(record(&g, &mut s, "b", Verdict::Partial, "p", "t"), RecordOutcome::Applied);
+        assert_eq!(
+            record(&g, &mut s, "b", Verdict::Partial, "p", "t"),
+            RecordOutcome::Applied
+        );
         assert_eq!(s.known, set(&["a"]));
-        assert!(s.unknown.is_empty(), "PARTIAL left {:?} in unknown", s.unknown);
+        assert!(
+            s.unknown.is_empty(),
+            "PARTIAL left {:?} in unknown",
+            s.unknown
+        );
         assert_eq!(s.belief.get("a"), Some(&1.0));
         assert_invariants(&g, &s);
     }
@@ -1185,7 +1306,14 @@ mod tests {
         // aa -> bb -> dd, aa -> cc -> dd, dd -> ee -> ff.
         let g = graph(
             &["aa", "bb", "cc", "dd", "ee", "ff"],
-            &[("aa", "bb"), ("aa", "cc"), ("bb", "dd"), ("cc", "dd"), ("dd", "ee"), ("ee", "ff")],
+            &[
+                ("aa", "bb"),
+                ("aa", "cc"),
+                ("bb", "dd"),
+                ("cc", "dd"),
+                ("dd", "ee"),
+                ("ee", "ff"),
+            ],
         );
         let mut s = State::default();
         for (id, verdict) in [
@@ -1210,12 +1338,18 @@ mod tests {
     fn record_terminates_on_a_cycle_that_survived_validation() {
         let g = graph(&["a", "b"], &[("a", "b"), ("b", "a")]);
         let mut s = State::default();
-        assert_eq!(record(&g, &mut s, "a", Verdict::Pass, "p", "t"), RecordOutcome::Applied);
+        assert_eq!(
+            record(&g, &mut s, "a", Verdict::Pass, "p", "t"),
+            RecordOutcome::Applied
+        );
         assert_eq!(s.known, set(&["a", "b"]));
         assert!(s.unknown.is_empty());
 
         let mut s = State::default();
-        assert_eq!(record(&g, &mut s, "a", Verdict::Fail, "p", "t"), RecordOutcome::Applied);
+        assert_eq!(
+            record(&g, &mut s, "a", Verdict::Fail, "p", "t"),
+            RecordOutcome::Applied
+        );
         assert_eq!(s.unknown, set(&["a", "b"]));
         assert!(s.known.is_empty());
         assert!(
@@ -1235,7 +1369,14 @@ mod tests {
     fn record_always_logs_evidence_even_for_an_id_naming_no_node() {
         let g = empty();
         let mut s = State::default();
-        let outcome = record(&g, &mut s, "ghost", Verdict::Pass, "the probe", "2026-08-05");
+        let outcome = record(
+            &g,
+            &mut s,
+            "ghost",
+            Verdict::Pass,
+            "the probe",
+            "2026-08-05",
+        );
         assert_eq!(outcome, RecordOutcome::Applied);
         assert_eq!(s.evidence.len(), 1);
         assert_eq!(s.evidence[0].node, "ghost");
@@ -1255,7 +1396,10 @@ mod tests {
         record(&g, &mut s, "", Verdict::Partial, "p3", "t3");
         assert_eq!(s.evidence.len(), 3);
         assert_eq!(
-            s.evidence.iter().map(|e| e.node.as_str()).collect::<Vec<_>>(),
+            s.evidence
+                .iter()
+                .map(|e| e.node.as_str())
+                .collect::<Vec<_>>(),
             vec!["ghost", "b", ""]
         );
         assert_eq!(s.known, set(&["a", "b"]));
@@ -1265,12 +1409,18 @@ mod tests {
     fn record_on_a_single_node_graph() {
         let g = single();
         let mut s = State::default();
-        assert_eq!(record(&g, &mut s, "a", Verdict::Pass, "p", "t"), RecordOutcome::Applied);
+        assert_eq!(
+            record(&g, &mut s, "a", Verdict::Pass, "p", "t"),
+            RecordOutcome::Applied
+        );
         assert_eq!(s.known, set(&["a"]));
         assert_eq!(s.belief.get("a"), Some(&1.0));
         assert_invariants(&g, &s);
 
-        assert_eq!(record(&g, &mut s, "a", Verdict::Fail, "p", "t"), RecordOutcome::Applied);
+        assert_eq!(
+            record(&g, &mut s, "a", Verdict::Fail, "p", "t"),
+            RecordOutcome::Applied
+        );
         assert_eq!(s.unknown, set(&["a"]));
         assert!(s.known.is_empty());
         assert_eq!(s.belief.get("a"), Some(&0.0));
@@ -1343,14 +1493,21 @@ mod tests {
     fn passing_ancestors_do_not_make_a_fail_contradictory() {
         // anc1 -> target, anc2 -> target: passing two *easier* things says nothing
         // about the harder one. Only descendant passes are contradictory.
-        let g = graph(&["anc1", "anc2", "target"], &[("anc1", "target"), ("anc2", "target")]);
+        let g = graph(
+            &["anc1", "anc2", "target"],
+            &[("anc1", "target"), ("anc2", "target")],
+        );
         let mut s = State::default();
         record(&g, &mut s, "anc1", Verdict::Pass, "p1", "t1");
         record(&g, &mut s, "anc2", Verdict::Pass, "p2", "t2");
         assert_eq!(s.known, set(&["anc1", "anc2"]));
 
         let outcome = record(&g, &mut s, "target", Verdict::Fail, "p3", "t3");
-        assert_eq!(outcome, RecordOutcome::Applied, "the closure direction is reversed");
+        assert_eq!(
+            outcome,
+            RecordOutcome::Applied,
+            "the closure direction is reversed"
+        );
         assert_eq!(s.unknown, set(&["target"]));
         assert_eq!(s.known, set(&["anc1", "anc2"]));
         assert_invariants(&g, &s);
@@ -1477,7 +1634,9 @@ mod tests {
         assert_eq!(s.belief.get("e"), Some(&1.0));
         assert_eq!(s.belief.get("f"), Some(&0.0));
         assert!(
-            s.belief.values().all(|p| p.is_finite() && (0.0..=1.0).contains(p)),
+            s.belief
+                .values()
+                .all(|p| p.is_finite() && (0.0..=1.0).contains(p)),
             "seeded beliefs escaped the unit interval: {:?}",
             s.belief
         );
@@ -1568,7 +1727,10 @@ mod tests {
             &prior(&[("a", 1.0), ("b", 1.0), ("c", 0.9), ("d", 0.9), ("e", 0.9)]),
         );
         assert_eq!(missing, ids(&[]));
-        assert_eq!(ask(next_step(&g, &s, &BTreeSet::new(), &cfg(30, 2.0))).node, "e");
+        assert_eq!(
+            ask(next_step(&g, &s, &BTreeSet::new(), &cfg(30, 2.0))).node,
+            "e"
+        );
     }
 
     // ==================================================================
@@ -1688,7 +1850,12 @@ mod tests {
     fn the_loop_replays_identically_from_the_same_state() {
         let g = graph(
             &["aa1", "aa2", "mid", "zz1", "zz2"],
-            &[("aa1", "mid"), ("aa2", "mid"), ("mid", "zz1"), ("mid", "zz2")],
+            &[
+                ("aa1", "mid"),
+                ("aa2", "mid"),
+                ("mid", "zz1"),
+                ("mid", "zz2"),
+            ],
         );
         let answer = |id: &str| match id {
             "mid" => Verdict::Partial,
@@ -1723,7 +1890,11 @@ mod tests {
         assert!(s.known.is_empty(), "self-report was recorded as mastery");
         assert!(s.unknown.is_empty());
         assert_eq!(s.belief.get("c"), Some(&DECLARED_BELIEF));
-        assert_eq!(s.belief.get("a"), None, "a prerequisite was primed by proxy");
+        assert_eq!(
+            s.belief.get("a"),
+            None,
+            "a prerequisite was primed by proxy"
+        );
         assert!(s.evidence.is_empty(), "a claim was logged as evidence");
     }
 
@@ -1763,10 +1934,18 @@ mod tests {
         let g = chain(&["a", "b", "c"]);
         let mut s = State::default();
         let report = declare(&g, &mut s, &ids(&["c"]), &ids(&["b"]), "t0");
-        assert_eq!(report.conflicts, ids(&["c"]), "the contradiction went unreported");
+        assert_eq!(
+            report.conflicts,
+            ids(&["c"]),
+            "the contradiction went unreported"
+        );
         assert!(report.primed.is_empty());
         assert_eq!(s.unknown, set(&["b", "c"]));
-        assert_eq!(s.belief.get("c"), Some(&0.0), "the claim outlived its refutation");
+        assert_eq!(
+            s.belief.get("c"),
+            Some(&0.0),
+            "the claim outlived its refutation"
+        );
     }
 
     #[test]
@@ -1788,9 +1967,17 @@ mod tests {
         assert_eq!(s.unknown, set(&["b"]));
 
         let report = declare(&g, &mut s, &ids(&["b"]), &[], "t1");
-        assert_eq!(s.unknown, set(&["b"]), "a claim overturned a graded failure");
+        assert_eq!(
+            s.unknown,
+            set(&["b"]),
+            "a claim overturned a graded failure"
+        );
         assert_eq!(s.belief.get("b"), Some(&0.0));
-        assert_eq!(report.conflicts, ids(&["b"]), "the overruled claim was not reported");
+        assert_eq!(
+            report.conflicts,
+            ids(&["b"]),
+            "the overruled claim was not reported"
+        );
     }
 
     #[test]
@@ -1842,9 +2029,17 @@ mod tests {
         let g = chain(&["a", "b"]);
         let mut s = State::default();
         let report = declare(&g, &mut s, &ids(&["b", "zz", "zz"]), &ids(&["gh"]), "t0");
-        assert_eq!(report.missing, ids(&["gh", "zz"]), "sorted and deduplicated");
+        assert_eq!(
+            report.missing,
+            ids(&["gh", "zz"]),
+            "sorted and deduplicated"
+        );
         assert_eq!(report.primed, ids(&["b"]), "the real claim was dropped too");
-        assert!(s.evidence.is_empty(), "a ghost id was recorded: {:?}", s.evidence);
+        assert!(
+            s.evidence.is_empty(),
+            "a ghost id was recorded: {:?}",
+            s.evidence
+        );
     }
 
     #[test]
@@ -1918,11 +2113,21 @@ mod tests {
     fn a_skip_is_logged_so_the_probe_can_be_found_and_rewritten() {
         let g = single();
         let mut s = State::default();
-        record(&g, &mut s, "a", Verdict::Skip, "why is 'we are 95% sure' wrong?", "t0");
+        record(
+            &g,
+            &mut s,
+            "a",
+            Verdict::Skip,
+            "why is 'we are 95% sure' wrong?",
+            "t0",
+        );
         let e = s.evidence.last().expect("the skip went unrecorded");
         assert_eq!(e.verdict, Verdict::Skip);
         assert_eq!(e.node, "a");
-        assert_eq!(e.probe, "why is 'we are 95% sure' wrong?", "the bad text was lost");
+        assert_eq!(
+            e.probe, "why is 'we are 95% sure' wrong?",
+            "the bad text was lost"
+        );
     }
 
     #[test]
@@ -1940,6 +2145,4 @@ mod tests {
         );
         assert_eq!(s.unknown, set(&["a", "b", "c"]));
     }
-
 }
-

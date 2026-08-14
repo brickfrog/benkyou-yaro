@@ -165,8 +165,14 @@ fn a_prefix_resolves_only_when_it_is_unambiguous() {
         let task = benkyou::exercise::load(&src).unwrap();
         bank::deposit(bank, &src, &digest, &task, &attestation()).unwrap();
 
-        assert!(bank::resolve(bank, &digest[..12]).is_ok(), "a long prefix must resolve");
-        assert!(bank::resolve(bank, &digest).is_ok(), "so must the whole digest");
+        assert!(
+            bank::resolve(bank, &digest[..12]).is_ok(),
+            "a long prefix must resolve"
+        );
+        assert!(
+            bank::resolve(bank, &digest).is_ok(),
+            "so must the whole digest"
+        );
         let err = bank::resolve(bank, "ffffffffff").expect_err("unknown digest");
         assert!(err.contains("no banked exercise"), "{err}");
         assert!(bank::resolve(bank, "../../etc").is_err(), "path traversal");

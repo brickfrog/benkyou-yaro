@@ -34,8 +34,13 @@ fn scratch(name: &str) -> PathBuf {
 /// A well-formed exercise passes both directions.
 #[test]
 fn a_sound_exercise_is_validated() {
-    let report = run_gate(&fixture("dedupe"), &scratch("sound"), "2026-08-05T00:00:00Z", &sandbox())
-        .expect("gate ran");
+    let report = run_gate(
+        &fixture("dedupe"),
+        &scratch("sound"),
+        "2026-08-05T00:00:00Z",
+        &sandbox(),
+    )
+    .expect("gate ran");
 
     assert!(
         matches!(report.outcome, GateOutcome::Validated(_)),
@@ -46,7 +51,10 @@ fn a_sound_exercise_is_validated() {
         report.solution.check_stderr
     );
 
-    assert!(report.solution.verdict.is_pass(), "reference solution must pass");
+    assert!(
+        report.solution.verdict.is_pass(),
+        "reference solution must pass"
+    );
     assert!(
         matches!(report.empty.verdict, Verdict::Fail(_)),
         "the untouched stub must fail, got {:?}",
@@ -78,8 +86,13 @@ fn a_vacuous_check_is_rejected() {
     )
     .expect("write");
 
-    let report =
-        run_gate(&dir, &scratch("vacuous"), "2026-08-05T00:00:00Z", &sandbox()).expect("gate ran");
+    let report = run_gate(
+        &dir,
+        &scratch("vacuous"),
+        "2026-08-05T00:00:00Z",
+        &sandbox(),
+    )
+    .expect("gate ran");
 
     match report.outcome {
         GateOutcome::Rejected(GateFailure::ChecksVacuous(_)) => {}
@@ -111,8 +124,13 @@ fn an_unsolvable_exercise_is_rejected() {
     )
     .expect("write");
 
-    let report =
-        run_gate(&dir, &scratch("unsolvable"), "2026-08-05T00:00:00Z", &sandbox()).expect("gate ran");
+    let report = run_gate(
+        &dir,
+        &scratch("unsolvable"),
+        "2026-08-05T00:00:00Z",
+        &sandbox(),
+    )
+    .expect("gate ran");
 
     match report.outcome {
         GateOutcome::Rejected(GateFailure::SolutionFailed(_)) => {}
@@ -124,7 +142,8 @@ fn an_unsolvable_exercise_is_rejected() {
 /// "3/7 failed" does not.
 #[test]
 fn the_graders_detail_reaches_the_caller() {
-    let report = run_gate(&fixture("dedupe"), &scratch("detail"), "t", &sandbox()).expect("gate ran");
+    let report =
+        run_gate(&fixture("dedupe"), &scratch("detail"), "t", &sandbox()).expect("gate ran");
     let reward = fs::read_to_string(report.empty.root.join("out/reward.json"))
         .expect("empty run wrote a reward file");
     assert!(
@@ -185,13 +204,18 @@ fn editing_any_content_after_gating_ungates_the_exercise() {
         ("a hidden case", "check/cases.py", "# rewritten\n"),
         ("the grader", "check/check.sh", "#!/bin/sh\nexit 0\n"),
         ("the starting stub", "setup/solution.py", "# rewritten\n"),
-        ("the reference solution", "solution/solve.sh", "#!/bin/sh\nexit 0\n"),
+        (
+            "the reference solution",
+            "solution/solve.sh",
+            "#!/bin/sh\nexit 0\n",
+        ),
         ("the prose", "instruction.md", "# a different question\n"),
     ];
 
     for (i, (what, rel, content)) in edits.into_iter().enumerate() {
         let dir = copy_fixture(&format!("edit-{i}"));
-        let report = run_gate(&dir, &scratch(&format!("edit-run-{i}")), "t", &sandbox()).expect("gate ran");
+        let report =
+            run_gate(&dir, &scratch(&format!("edit-run-{i}")), "t", &sandbox()).expect("gate ran");
         let gate = match report.outcome {
             GateOutcome::Validated(g) => g,
             other => panic!("{what}: expected Validated, got {other:?}"),
@@ -215,8 +239,13 @@ fn editing_the_task_file_ungates_the_exercise() {
         .enumerate()
     {
         let dir = copy_fixture(&format!("task-edit-{i}"));
-        let report =
-            run_gate(&dir, &scratch(&format!("task-edit-run-{i}")), "t", &sandbox()).expect("gate ran");
+        let report = run_gate(
+            &dir,
+            &scratch(&format!("task-edit-run-{i}")),
+            "t",
+            &sandbox(),
+        )
+        .expect("gate ran");
         let gate = match report.outcome {
             GateOutcome::Validated(g) => g,
             other => panic!("expected Validated, got {other:?}"),
@@ -228,7 +257,8 @@ fn editing_the_task_file_ungates_the_exercise() {
         text.push_str(addition);
         fs::write(&path, text).expect("write");
 
-        let err = exercise::require_current(&dir, &sandbox()).expect_err("task.toml edit was not noticed");
+        let err = exercise::require_current(&dir, &sandbox())
+            .expect_err("task.toml edit was not noticed");
         assert!(err.contains("changed since it was gated"), "{err}");
     }
 }
@@ -301,7 +331,10 @@ fn a_grader_cannot_reach_the_exercise_directory() {
     .expect("write");
 
     run_gate(&dir, &scratch("noreach-run"), "t", &sandbox()).expect("gate ran");
-    assert!(!marker.exists(), "a grader wrote into its own source directory");
+    assert!(
+        !marker.exists(),
+        "a grader wrote into its own source directory"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -321,9 +354,16 @@ fn a_grader_that_misread_the_concept_is_rejected_by_its_own_trap() {
     let cases = dir.join("check/cases.py");
     let mut text = fs::read_to_string(&cases).expect("read");
     text = text
-        .replace("([3, 1, 3, 2, 1], [3, 1, 2]),", "([3, 1, 3, 2, 1], [1, 2, 3]),")
-        .replace(r#"(["b", "a", "b"], ["b", "a"]),"#, r#"(["b", "a", "b"], ["a", "b"]),"#);
-    let mutation = "    if xs != original:\n        failures.append(f\"dedupe mutated its input: {xs!r}\")\n";
+        .replace(
+            "([3, 1, 3, 2, 1], [3, 1, 2]),",
+            "([3, 1, 3, 2, 1], [1, 2, 3]),",
+        )
+        .replace(
+            r#"(["b", "a", "b"], ["b", "a"]),"#,
+            r#"(["b", "a", "b"], ["a", "b"]),"#,
+        );
+    let mutation =
+        "    if xs != original:\n        failures.append(f\"dedupe mutated its input: {xs!r}\")\n";
     text = text.replace(mutation, "");
     fs::write(&cases, text).expect("write");
 
@@ -336,7 +376,10 @@ fn a_grader_that_misread_the_concept_is_rejected_by_its_own_trap() {
 
     let report = run_gate(&dir, &scratch("drift-run"), "t", &sandbox()).expect("gate ran");
 
-    assert!(report.solution.verdict.is_pass(), "direction one still holds");
+    assert!(
+        report.solution.verdict.is_pass(),
+        "direction one still holds"
+    );
     assert!(
         matches!(report.empty.verdict, Verdict::Fail(_)),
         "direction two still holds: {:?}",
@@ -358,7 +401,11 @@ fn an_exercise_with_no_named_wrong_answer_is_rejected() {
     let dir = copy_fixture("notrap");
     let path = dir.join("task.toml");
     let text = fs::read_to_string(&path).expect("read");
-    let stripped = text.split("[[known_bad]]").next().expect("head").to_string();
+    let stripped = text
+        .split("[[known_bad]]")
+        .next()
+        .expect("head")
+        .to_string();
     fs::write(&path, stripped).expect("write");
 
     let report = run_gate(&dir, &scratch("notrap-run"), "t", &sandbox()).expect("gate ran");

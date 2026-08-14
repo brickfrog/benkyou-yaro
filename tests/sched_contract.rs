@@ -37,7 +37,12 @@ fn edge(from: &str, to: &str, ty: EdgeType) -> Edge {
 
 fn graph(nodes: &[&str], edges: Vec<Edge>) -> Graph {
     Graph {
-        goal: Goal { id: "g".into(), target: "t".into(), deadline: None, budget_hours: 10 },
+        goal: Goal {
+            id: "g".into(),
+            target: "t".into(),
+            deadline: None,
+            budget_hours: 10,
+        },
         nodes: nodes.iter().map(|n| node(n)).collect(),
         edges,
         state: State::default(),
@@ -48,15 +53,27 @@ fn graph(nodes: &[&str], edges: Vec<Edge>) -> Graph {
 /// `Edge { from: easy, to: hard, Encompasses }`, so attempting `hard` credits `easy`.
 #[test]
 fn encompass_credit_flows_from_harder_to_easier() {
-    let g = graph(&["easy", "hard"], vec![edge("easy", "hard", EdgeType::Encompasses)]);
-    let cfg = SchedConfig { encompass_credit: 0.5, ..SchedConfig::default() };
+    let g = graph(
+        &["easy", "hard"],
+        vec![edge("easy", "hard", EdgeType::Encompasses)],
+    );
+    let cfg = SchedConfig {
+        encompass_credit: 0.5,
+        ..SchedConfig::default()
+    };
 
     let mut f = Fluencies::new();
     let credited = record_attempt(&g, &mut f, "hard", 1.0, 0, &cfg);
 
-    assert!(credited.contains("easy"), "attempting the hard node must credit the easy one");
+    assert!(
+        credited.contains("easy"),
+        "attempting the hard node must credit the easy one"
+    );
     assert_eq!(f["hard"].mastery, 1.0);
-    assert_eq!(f["easy"].mastery, 0.5, "direct encompass gets one hop of credit");
+    assert_eq!(
+        f["easy"].mastery, 0.5,
+        "direct encompass gets one hop of credit"
+    );
 
     // And not the other way round.
     let mut f2 = Fluencies::new();
@@ -78,7 +95,10 @@ fn encompass_credit_attenuates_per_hop() {
             edge("c", "b", EdgeType::Encompasses),
         ],
     );
-    let cfg = SchedConfig { encompass_credit: 0.5, ..SchedConfig::default() };
+    let cfg = SchedConfig {
+        encompass_credit: 0.5,
+        ..SchedConfig::default()
+    };
 
     let mut f = Fluencies::new();
     record_attempt(&g, &mut f, "a", 1.0, 0, &cfg);
@@ -92,7 +112,10 @@ fn encompass_credit_attenuates_per_hop() {
 /// Otherwise a single exercise inflates the practice history of everything beneath it.
 #[test]
 fn encompassed_nodes_are_not_credited_with_an_attempt() {
-    let g = graph(&["easy", "hard"], vec![edge("easy", "hard", EdgeType::Encompasses)]);
+    let g = graph(
+        &["easy", "hard"],
+        vec![edge("easy", "hard", EdgeType::Encompasses)],
+    );
     let cfg = SchedConfig::default();
     let mut f = Fluencies::new();
 
@@ -112,12 +135,18 @@ fn an_encompass_cycle_terminates_and_credits_once() {
             edge("b", "a", EdgeType::Encompasses),
         ],
     );
-    let cfg = SchedConfig { encompass_credit: 0.5, ..SchedConfig::default() };
+    let cfg = SchedConfig {
+        encompass_credit: 0.5,
+        ..SchedConfig::default()
+    };
     let mut f = Fluencies::new();
 
     record_attempt(&g, &mut f, "a", 1.0, 0, &cfg);
 
-    assert_eq!(f["a"].mastery, 1.0, "the attempted node is not re-credited by the cycle");
+    assert_eq!(
+        f["a"].mastery, 1.0,
+        "the attempted node is not re-credited by the cycle"
+    );
     assert_eq!(f["b"].mastery, 0.5);
 }
 
@@ -126,7 +155,10 @@ fn an_encompass_cycle_terminates_and_credits_once() {
 /// overnight. The learner had forgotten nothing in 24 hours.
 #[test]
 fn a_stale_prerequisite_stays_unlocked_and_becomes_due() {
-    let g = graph(&["base", "dep"], vec![edge("base", "dep", EdgeType::Requires)]);
+    let g = graph(
+        &["base", "dep"],
+        vec![edge("base", "dep", EdgeType::Requires)],
+    );
     let cfg = SchedConfig {
         target: 1.0,
         review_after_days: 10.0,
@@ -136,7 +168,10 @@ fn a_stale_prerequisite_stays_unlocked_and_becomes_due() {
     let mut f = Fluencies::new();
     record_attempt(&g, &mut f, "base", 1.0, 0, &cfg);
 
-    assert!(is_unlocked(&g, &f, "dep", &cfg), "at target on the day of practice");
+    assert!(
+        is_unlocked(&g, &f, "dep", &cfg),
+        "at target on the day of practice"
+    );
     assert!(
         is_unlocked(&g, &f, "dep", &cfg),
         "one day later the dependent must still be open - nothing was forgotten"
@@ -153,10 +188,7 @@ fn a_stale_prerequisite_stays_unlocked_and_becomes_due() {
         is_unlocked(&g, &f, "dep", &cfg),
         "and being owed a check still does not close the dependent"
     );
-    assert_eq!(
-        f["base"].mastery, 1.0,
-        "evidence is not spent by waiting"
-    );
+    assert_eq!(f["base"].mastery, 1.0, "evidence is not spent by waiting");
 }
 
 /// Credit over an `encompasses` edge is an assertion about the graph, not a check
@@ -217,17 +249,17 @@ fn the_lapse_penalty_is_proportional_not_a_cliff() {
         outcome(0.0) < 0.01,
         "a total failure still erases the balance"
     );
-    assert!(
-        outcome(0.25) < just_under,
-        "a worse score still costs more"
-    );
+    assert!(outcome(0.25) < just_under, "a worse score still costs more");
 }
 
 /// Interleaving is the one scheduling lever with strong evidence behind it.
 #[test]
 fn a_session_interleaves_across_concepts() {
     let g = graph(&["a", "b", "c"], vec![]);
-    let cfg = SchedConfig { session_size: 6, ..SchedConfig::default() };
+    let cfg = SchedConfig {
+        session_size: 6,
+        ..SchedConfig::default()
+    };
     let f = Fluencies::new();
 
     let session = compose_session(&g, &f, 0, &cfg);
@@ -236,7 +268,11 @@ fn a_session_interleaves_across_concepts() {
         assert_ne!(w[0], w[1], "blocked practice: {session:?}");
     }
     for id in ["a", "b", "c"] {
-        assert_eq!(session.iter().filter(|s| *s == id).count(), 2, "{session:?}");
+        assert_eq!(
+            session.iter().filter(|s| *s == id).count(),
+            2,
+            "{session:?}"
+        );
     }
 }
 
@@ -245,7 +281,10 @@ fn a_session_interleaves_across_concepts() {
 #[test]
 fn a_single_concept_session_repeats_it() {
     let g = graph(&["only"], vec![]);
-    let cfg = SchedConfig { session_size: 3, ..SchedConfig::default() };
+    let cfg = SchedConfig {
+        session_size: 3,
+        ..SchedConfig::default()
+    };
     let session = compose_session(&g, &Fluencies::new(), 0, &cfg);
     assert_eq!(session, vec!["only".to_string(); 3]);
 }
@@ -298,6 +337,9 @@ fn attempting_a_node_outside_the_graph_creates_no_phantom_state() {
 
     record_attempt(&g, &mut f, "ghost", 1.0, 0, &cfg);
 
-    assert!(!f.contains_key("ghost"), "phantom fluency for a nonexistent node: {f:?}");
+    assert!(
+        !f.contains_key("ghost"),
+        "phantom fluency for a nonexistent node: {f:?}"
+    );
     assert!(!practisable(&g, &f, 0, &cfg).iter().any(|id| id == "ghost"));
 }

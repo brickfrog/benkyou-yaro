@@ -56,7 +56,10 @@ fn help_is_answered_from_any_position() {
 #[test]
 fn a_bare_help_after_the_verb_is_not_a_help_request() {
     let (ok, stdout, stderr) = benkyou(&["validate", "help"]);
-    assert!(!ok, "validate on a goal named `help` should have failed: {stdout}");
+    assert!(
+        !ok,
+        "validate on a goal named `help` should have failed: {stdout}"
+    );
     assert!(
         stderr.contains("help"),
         "expected the goal `help` to be looked up, got {stderr:?}"
@@ -256,7 +259,10 @@ fn the_printed_schema_shows_a_skill_no_grader_can_judge() {
         n.id
     );
     // And every other node stays gradable, so the flag reads as the exception it is.
-    assert_eq!(graph.nodes.len() - 1, graph.nodes.iter().filter(|x| x.gradable).count());
+    assert_eq!(
+        graph.nodes.len() - 1,
+        graph.nodes.iter().filter(|x| x.gradable).count()
+    );
 }
 
 /// The refusal has to name the way forward. A dead end here sent one blind-test agent
@@ -271,14 +277,27 @@ fn an_exercise_order_for_an_ungradable_node_points_at_practice() {
     fs::write(dir.join("benkyou/goals/k.json"), &schema).expect("write goal");
 
     let out = Command::new(env!("CARGO_BIN_EXE_benkyou"))
-        .args(["order", "k", "--kind", "exercise", "--node", "incident_writeup"])
+        .args([
+            "order",
+            "k",
+            "--kind",
+            "exercise",
+            "--node",
+            "incident_writeup",
+        ])
         .env("XDG_DATA_HOME", &dir)
         .output()
         .expect("run benkyou");
     let stderr = String::from_utf8(out.stderr).expect("utf8");
 
-    assert!(!out.status.success(), "an ungradable node was handed an exercise order");
-    assert!(stderr.contains("practice"), "the refusal named no way forward: {stderr}");
+    assert!(
+        !out.status.success(),
+        "an ungradable node was handed an exercise order"
+    );
+    assert!(
+        stderr.contains("practice"),
+        "the refusal named no way forward: {stderr}"
+    );
     assert!(
         stderr.contains("incident_writeup"),
         "the refusal did not say which node: {stderr}"
@@ -326,8 +345,7 @@ fn auto_selection_passes_over_an_ungradable_node_for_one_it_can_use() {
         "the scheduler stopped on the ungradable node instead of passing over it: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let body: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("order printed JSON");
+    let body: serde_json::Value = serde_json::from_slice(&out.stdout).expect("order printed JSON");
     assert_eq!(
         body["node"]["id"], "zzz_gradable",
         "wrong target chosen: {body}"
@@ -372,8 +390,14 @@ fn the_bare_order_dead_end_names_the_node_and_the_way_out() {
     let out = run(&["order", "d", "--kind", "exercise"]);
     let stderr = String::from_utf8(out.stderr).expect("utf8");
     assert!(!out.status.success());
-    assert!(stderr.contains("incident_command"), "no node named: {stderr}");
-    assert!(stderr.contains("practice"), "no way forward offered: {stderr}");
+    assert!(
+        stderr.contains("incident_command"),
+        "no node named: {stderr}"
+    );
+    assert!(
+        stderr.contains("practice"),
+        "no way forward offered: {stderr}"
+    );
     assert!(
         !stderr.contains("every unlocked concept is at target"),
         "still claims the curriculum is finished: {stderr}"
@@ -427,7 +451,10 @@ fn hand_scoring_something_a_grader_could_judge_is_flagged() {
 
     let flagged = practice("markable");
     assert!(
-        flagged["warning"].as_str().unwrap_or("").contains("markable"),
+        flagged["warning"]
+            .as_str()
+            .unwrap_or("")
+            .contains("markable"),
         "hand-scoring a gradable node went unremarked: {flagged}"
     );
     // Still recorded. The point is to mark it, not to block it. f32 through JSON, so
@@ -448,11 +475,7 @@ fn hand_scoring_something_a_grader_could_judge_is_flagged() {
 fn the_version_is_the_crate_version_from_any_position() {
     let expected = format!("benkyou {}", env!("CARGO_PKG_VERSION"));
 
-    for args in [
-        vec!["--version"],
-        vec!["-V"],
-        vec!["goals", "--version"],
-    ] {
+    for args in [vec!["--version"], vec!["-V"], vec!["goals", "--version"]] {
         let (ok, stdout, stderr) = benkyou(&args);
         assert!(ok, "{args:?} must succeed, got: {stderr}");
         assert_eq!(

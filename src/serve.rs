@@ -66,7 +66,9 @@ pub struct Request {
 impl Request {
     /// Case-insensitive header lookup.
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.get(&name.to_ascii_lowercase()).map(|v| v.as_str())
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(|v| v.as_str())
     }
 }
 
@@ -79,7 +81,11 @@ pub struct Response {
 
 impl Response {
     pub fn json(status: u16, body: Vec<u8>) -> Self {
-        Self { status, content_type: "application/json; charset=utf-8".into(), body }
+        Self {
+            status,
+            content_type: "application/json; charset=utf-8".into(),
+            body,
+        }
     }
 
     pub fn html(body: &str) -> Self {
@@ -154,7 +160,12 @@ pub fn bind(port: u16) -> Result<Server, String> {
         .local_addr()
         .map_err(|e| format!("failed to read bound address: {e}"))?
         .port();
-    Ok(Server { listener, port, token: mint_token(), shutdown: Arc::new(AtomicBool::new(false)) })
+    Ok(Server {
+        listener,
+        port,
+        token: mint_token(),
+        shutdown: Arc::new(AtomicBool::new(false)),
+    })
 }
 
 /// Mint a 128-bit token, hex-encoded.
@@ -173,12 +184,17 @@ pub fn bind(port: u16) -> Result<Server, String> {
 /// filesystem read that fails differently on every platform. If this server ever
 /// stops being loopback-only, this function is the first thing that must change.
 fn mint_token() -> String {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let heap = Box::new(0u8);
     let addr = &*heap as *const u8 as usize as u64;
     let pid = std::process::id() as u64;
-    let again =
-        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0) as u64;
+    let again = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0) as u64;
 
     let lo = mix(nanos as u64 ^ addr ^ pid.rotate_left(17));
     let hi = mix((nanos >> 64) as u64 ^ addr.rotate_left(32) ^ again ^ mix(lo));
@@ -203,7 +219,9 @@ impl Server {
     }
 
     pub fn shutdown_handle(&self) -> ShutdownHandle {
-        ShutdownHandle { flag: Arc::clone(&self.shutdown) }
+        ShutdownHandle {
+            flag: Arc::clone(&self.shutdown),
+        }
     }
 
     /// Serve until a handler calls [`ShutdownHandle::shutdown`]. Blocks the caller.
@@ -350,9 +368,12 @@ fn reject(req: &Request, token: &str) -> Option<Response> {
 
     let want = token.as_bytes();
     let ok = if req.path == "/" || req.path == "/index.html" {
-        req.query.get("t").is_some_and(|t| ct_eq(t.as_bytes(), want))
+        req.query
+            .get("t")
+            .is_some_and(|t| ct_eq(t.as_bytes(), want))
     } else if req.path.starts_with("/api/") {
-        req.header("x-benkyou-token").is_some_and(|t| ct_eq(t.as_bytes(), want))
+        req.header("x-benkyou-token")
+            .is_some_and(|t| ct_eq(t.as_bytes(), want))
     } else {
         // Anything else is not a secret: unknown paths reach the handler and get a 404
         // there. Adding an authenticated static-asset route would mean the page has to
@@ -452,8 +473,14 @@ fn parse_request(buf: &[u8]) -> Result<Request, ParseError> {
 
     let start = lines.next().ok_or(ParseError::Malformed)?;
     let mut parts = start.split(' ');
-    let method = parts.next().filter(|s| !s.is_empty()).ok_or(ParseError::Malformed)?;
-    let target = parts.next().filter(|s| !s.is_empty()).ok_or(ParseError::Malformed)?;
+    let method = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or(ParseError::Malformed)?;
+    let target = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or(ParseError::Malformed)?;
     // The version is required by the grammar but nothing here varies on it: every
     // response is framed as if this were HTTP/1.0 with an explicit close.
     let version = parts.next().ok_or(ParseError::Malformed)?;
@@ -624,8 +651,10 @@ mod tests {
 
     #[test]
     fn parses_request_line_and_headers() {
-        let req = parse("GET /api/session HTTP/1.1\r\nHost: 127.0.0.1:7777\r\nX-Benkyou-Token: abc\r\n\r\n")
-            .unwrap();
+        let req = parse(
+            "GET /api/session HTTP/1.1\r\nHost: 127.0.0.1:7777\r\nX-Benkyou-Token: abc\r\n\r\n",
+        )
+        .unwrap();
         assert_eq!(req.method, "GET");
         assert_eq!(req.path, "/api/session");
         assert!(req.query.is_empty());
@@ -662,7 +691,10 @@ mod tests {
 
     #[test]
     fn head_without_blank_line_is_incomplete() {
-        assert_eq!(parse("GET / HTTP/1.1\r\nHost: x\r\n").unwrap_err(), ParseError::Incomplete);
+        assert_eq!(
+            parse("GET / HTTP/1.1\r\nHost: x\r\n").unwrap_err(),
+            ParseError::Incomplete
+        );
         assert_eq!(parse("").unwrap_err(), ParseError::Incomplete);
     }
 
@@ -674,7 +706,10 @@ mod tests {
 
     #[test]
     fn oversized_content_length_is_413() {
-        let raw = format!("PUT /api/file HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_BODY + 1);
+        let raw = format!(
+            "PUT /api/file HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY + 1
+        );
         assert_eq!(parse(&raw).unwrap_err(), ParseError::TooLarge);
         assert_eq!(parse(&raw).unwrap_err().response().status, 413);
     }
@@ -685,14 +720,17 @@ mod tests {
         assert_eq!(err, ParseError::LengthRequired);
         assert_eq!(err.response().status, 411);
 
-        let chunked = parse("POST /api/run HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n")
-            .unwrap_err();
+        let chunked =
+            parse("POST /api/run HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap_err();
         assert_eq!(chunked, ParseError::LengthRequired);
     }
 
     #[test]
     fn no_body_and_no_content_length_is_fine() {
-        assert!(parse("POST /api/next HTTP/1.1\r\n\r\n").unwrap().body.is_empty());
+        assert!(parse("POST /api/next HTTP/1.1\r\n\r\n")
+            .unwrap()
+            .body
+            .is_empty());
     }
 
     #[test]
@@ -757,8 +795,11 @@ mod tests {
     fn gate_requires_query_token_on_the_page() {
         let token = "0123456789abcdef";
         assert!(reject(&req("GET /?t=0123456789abcdef HTTP/1.1\r\n\r\n"), token).is_none());
-        assert!(reject(&req("GET /index.html?t=0123456789abcdef HTTP/1.1\r\n\r\n"), token)
-            .is_none());
+        assert!(reject(
+            &req("GET /index.html?t=0123456789abcdef HTTP/1.1\r\n\r\n"),
+            token
+        )
+        .is_none());
         for raw in ["GET / HTTP/1.1\r\n\r\n", "GET /?t=wrong HTTP/1.1\r\n\r\n"] {
             let resp = reject(&req(raw), token).expect("must be refused");
             assert_eq!(resp.status, 403);

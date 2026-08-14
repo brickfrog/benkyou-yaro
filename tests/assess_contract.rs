@@ -41,7 +41,12 @@ fn req(from: &str, to: &str) -> Edge {
 /// a <- b <- c <- d, plus an isolated z.
 fn chain() -> Graph {
     Graph {
-        goal: Goal { id: "g".into(), target: "t".into(), deadline: None, budget_hours: 10 },
+        goal: Goal {
+            id: "g".into(),
+            target: "t".into(),
+            deadline: None,
+            budget_hours: 10,
+        },
         nodes: ["a", "b", "c", "d", "z"].iter().map(|n| node(n)).collect(),
         edges: vec![req("a", "b"), req("b", "c"), req("c", "d")],
         state: State::default(),
@@ -50,7 +55,10 @@ fn chain() -> Graph {
 
 fn check_invariants(g: &Graph, s: &State, ctx: &str) {
     let overlap: Vec<_> = s.known.intersection(&s.unknown).collect();
-    assert!(overlap.is_empty(), "{ctx}: known and unknown overlap on {overlap:?}");
+    assert!(
+        overlap.is_empty(),
+        "{ctx}: known and unknown overlap on {overlap:?}"
+    );
     assert!(
         g.is_downward_closed(&s.known),
         "{ctx}: known is not downward-closed: {:?}",
@@ -105,7 +113,10 @@ fn a_partial_verdict_unresolves_a_previously_known_node() {
         "Partial must leave the node out of known, so it stays in the plan as review"
     );
     assert!(!s.unknown.contains("c"), "Partial is not a failure either");
-    assert!(s.known.contains("a") && s.known.contains("b"), "ancestors stay known");
+    assert!(
+        s.known.contains("a") && s.known.contains("b"),
+        "ancestors stay known"
+    );
     check_invariants(&g, &s, "after partial on c");
 }
 
@@ -180,9 +191,16 @@ fn a_contradictory_failure_is_re_asked_and_changes_nothing() {
     let before_unknown = s.unknown.clone();
 
     let outcome = record(&g, &mut s, "b", Verdict::Fail, "p", "t2");
-    assert_eq!(outcome, RecordOutcome::ReAsk, "failing b contradicts passing c and d");
+    assert_eq!(
+        outcome,
+        RecordOutcome::ReAsk,
+        "failing b contradicts passing c and d"
+    );
     assert_eq!(s.known, before_known, "a re-ask must not change known");
-    assert_eq!(s.unknown, before_unknown, "a re-ask must not change unknown");
+    assert_eq!(
+        s.unknown, before_unknown,
+        "a re-ask must not change unknown"
+    );
     assert!(
         s.evidence.iter().any(|e| e.node == "b"),
         "the contradiction itself is worth recording"
@@ -190,7 +208,11 @@ fn a_contradictory_failure_is_re_asked_and_changes_nothing() {
 
     // Standing by it applies normally.
     let second = record(&g, &mut s, "b", Verdict::Fail, "p", "t3");
-    assert_eq!(second, RecordOutcome::Applied, "a repeated failure is accepted");
+    assert_eq!(
+        second,
+        RecordOutcome::Applied,
+        "a repeated failure is accepted"
+    );
     check_invariants(&g, &s, "after the re-asked failure is applied");
 }
 
@@ -199,7 +221,10 @@ fn a_contradictory_failure_is_re_asked_and_changes_nothing() {
 fn the_loop_terminates_without_repeating_a_question() {
     let g = chain();
     let mut s = State::default();
-    let cfg = AssessConfig { max_questions: 30, min_gain: 0.5 };
+    let cfg = AssessConfig {
+        max_questions: 30,
+        min_gain: 0.5,
+    };
     let mut asked = BTreeSet::new();
 
     let stop = loop {
@@ -214,8 +239,15 @@ fn the_loop_terminates_without_repeating_a_question() {
         }
     };
 
-    assert_eq!(stop, StopReason::Complete, "passing everything resolves the graph");
-    assert!(asked.len() < g.nodes.len(), "closure should save at least one question");
+    assert_eq!(
+        stop,
+        StopReason::Complete,
+        "passing everything resolves the graph"
+    );
+    assert!(
+        asked.len() < g.nodes.len(),
+        "closure should save at least one question"
+    );
 }
 
 /// Evidence beats a prior: seeding must not overwrite something already answered.
@@ -261,7 +293,11 @@ fn out_of_range_beliefs_cannot_poison_the_gain() {
 
     for n in &g.nodes {
         let g_val = gain(&g, &s, &n.id);
-        assert!(g_val.is_finite(), "{} produced a non-finite gain: {g_val}", n.id);
+        assert!(
+            g_val.is_finite(),
+            "{} produced a non-finite gain: {g_val}",
+            n.id
+        );
         assert!(g_val >= 0.0, "{} produced a negative gain: {g_val}", n.id);
     }
 }

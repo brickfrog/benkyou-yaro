@@ -9,7 +9,7 @@
 //! on its own. `BENKYOU_REQUIRE_CONTAINER=1` turns every skip here into a failure, which
 //! is what CI sets. Without it this file can print `19 passed` having skipped nineteen.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use benkyou::deps::{self, Runtime};
 use benkyou::exercise::Deps;
@@ -62,7 +62,7 @@ fn scratch(name: &str) -> PathBuf {
 
 const WORK: &[(&str, Access)] = &[("work", Access::Write)];
 
-fn run(backend: &Backend, dir: &PathBuf, script: &str, secs: u32) -> Outcome {
+fn run(backend: &Backend, dir: &Path, script: &str, secs: u32) -> Outcome {
     backend
         .run(&Job::new(dir, WORK, "work", script, secs))
         .expect("ran")
@@ -74,7 +74,9 @@ fn the_backend_is_selectable_by_name() {
     let Some(backend) = container() else { return };
     assert_eq!(backend.name(), "container");
     assert!(
-        backend.image_id().is_some_and(|id| id.starts_with("sha256:")),
+        backend
+            .image_id()
+            .is_some_and(|id| id.starts_with("sha256:")),
         "a container verdict has to be able to name its runtime: {:?}",
         backend.image_id()
     );
@@ -106,7 +108,12 @@ fn output_and_exit_code_survive_the_engine() {
 #[test]
 fn a_missing_command_still_reports_127() {
     let Some(backend) = container() else { return };
-    let out = run(&backend, &scratch("missing"), "definitely-not-a-real-binary", 60);
+    let out = run(
+        &backend,
+        &scratch("missing"),
+        "definitely-not-a-real-binary",
+        60,
+    );
     assert_eq!(out.exit_code, Some(127), "{out:?}");
     assert!(!out.timed_out);
 }
@@ -128,7 +135,10 @@ fn writes_reach_the_host_directory_as_the_caller() {
     use std::os::unix::fs::MetadataExt;
     let mine = std::fs::metadata(&dir).expect("scratch metadata").uid();
     let theirs = std::fs::metadata(&path).expect("answer metadata").uid();
-    assert_eq!(theirs, mine, "a job's writes must belong to the caller, not to root");
+    assert_eq!(
+        theirs, mine,
+        "a job's writes must belong to the caller, not to root"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +154,10 @@ fn a_directory_outside_the_view_does_not_exist() {
     std::fs::write(dir.join("secret/answer"), "42").unwrap();
 
     let out = run(&backend, &dir, "cat ../secret/answer", 60);
-    assert!(!out.succeeded(), "read a directory the view did not name: {out:?}");
+    assert!(
+        !out.succeeded(),
+        "read a directory the view did not name: {out:?}"
+    );
     assert!(!out.stdout.contains("42"), "{out:?}");
 }
 
@@ -167,7 +180,10 @@ fn a_read_only_view_entry_cannot_be_written() {
         .expect("ran");
 
     assert!(!out.succeeded(), "wrote to a read-only view entry: {out:?}");
-    assert_eq!(std::fs::read_to_string(dir.join("check/check.sh")).unwrap(), "original");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("check/check.sh")).unwrap(),
+        "original"
+    );
 }
 
 /// The gate's first direction: `solution/` in view, `check/` left out.
@@ -192,7 +208,10 @@ fn the_reference_run_cannot_see_the_hidden_checks() {
         ))
         .expect("ran");
 
-    assert!(!out.succeeded(), "the reference run read the hidden checks: {out:?}");
+    assert!(
+        !out.succeeded(),
+        "the reference run read the hidden checks: {out:?}"
+    );
     assert!(!out.stdout.contains("EXPECTED"), "{out:?}");
 }
 
@@ -211,7 +230,10 @@ fn the_host_filesystem_is_not_reachable() {
 
     // And a home directory, what a bad `rm` goes for.
     let out = run(&backend, &dir, "ls /home && ls /root", 60);
-    assert!(!out.succeeded(), "enumerated real home directories: {out:?}");
+    assert!(
+        !out.succeeded(),
+        "enumerated real home directories: {out:?}"
+    );
 }
 
 /// No network, from `--network none`. A grader that can fetch makes `warm` pointless.
@@ -229,9 +251,15 @@ fn there_is_no_network() {
          python3 -c \"import socket;socket.gethostbyname('example.com')\" 2>/dev/null && echo RESOLVED",
         60,
     );
-    assert!(out.stdout.contains("probed"), "the probe never ran: {out:?}");
+    assert!(
+        out.stdout.contains("probed"),
+        "the probe never ran: {out:?}"
+    );
     assert!(!out.stdout.contains("CONNECTED"), "{out:?}");
-    assert!(!out.stdout.contains("RESOLVED"), "dns resolved inside a network-less job: {out:?}");
+    assert!(
+        !out.stdout.contains("RESOLVED"),
+        "dns resolved inside a network-less job: {out:?}"
+    );
 }
 
 /// `HOME` is writable and is not the user's. The synthetic passwd is mounted so
@@ -247,7 +275,10 @@ fn home_is_writable_and_the_interpreter_agrees() {
     );
     assert!(out.succeeded(), "{out:?}");
     assert_eq!(out.stdout.trim(), "/box/.home", "{out:?}");
-    assert!(!out.stdout.contains("/home/"), "HOME was a real home: {out:?}");
+    assert!(
+        !out.stdout.contains("/home/"),
+        "HOME was a real home: {out:?}"
+    );
 }
 
 /// The caller's environment does not reach the job. The image's own `ENV` still does.
@@ -263,9 +294,18 @@ fn the_callers_environment_does_not_leak() {
     );
     std::env::remove_var("BENKYOU_CONTAINER_LEAK");
 
-    assert!(out.stdout.contains("[unset]"), "caller's environment leaked: {out:?}");
-    assert!(out.stdout.contains("[C.UTF-8]"), "the allowlist did not arrive: {out:?}");
-    assert!(out.stdout.contains("[UTC]"), "the allowlist did not arrive: {out:?}");
+    assert!(
+        out.stdout.contains("[unset]"),
+        "caller's environment leaked: {out:?}"
+    );
+    assert!(
+        out.stdout.contains("[C.UTF-8]"),
+        "the allowlist did not arrive: {out:?}"
+    );
+    assert!(
+        out.stdout.contains("[UTC]"),
+        "the allowlist did not arrive: {out:?}"
+    );
 }
 
 /// The runtime is the image's, not the machine's. Asserts the image's version, because
@@ -319,10 +359,16 @@ fn the_deadline_kills_the_container_and_not_just_the_client() {
 
     let marker = dir.join("work/survivor");
     let before = std::fs::metadata(&marker).map(|m| m.len()).unwrap_or(0);
-    assert!(before > 0, "the background writer never ran, so this proves nothing");
+    assert!(
+        before > 0,
+        "the background writer never ran, so this proves nothing"
+    );
     std::thread::sleep(std::time::Duration::from_secs(2));
     let after = std::fs::metadata(&marker).map(|m| m.len()).unwrap_or(0);
-    assert_eq!(before, after, "the container outlived the deadline and kept writing");
+    assert_eq!(
+        before, after,
+        "the container outlived the deadline and kept writing"
+    );
 }
 
 /// An output bomb is reported as truncation, not as a hang.
@@ -330,14 +376,30 @@ fn the_deadline_kills_the_container_and_not_just_the_client() {
 fn runaway_output_is_truncated_not_hung() {
     let Some(backend) = container() else { return };
     let dir = scratch("flood");
-    let mut job = Job::new(&dir, WORK, "work", "yes hello | head -c 20000000; exit 5", 120);
-    job.limits = Limits { output_bytes: 64 * 1024, ..Limits::default() };
+    let mut job = Job::new(
+        &dir,
+        WORK,
+        "work",
+        "yes hello | head -c 20000000; exit 5",
+        120,
+    );
+    job.limits = Limits {
+        output_bytes: 64 * 1024,
+        ..Limits::default()
+    };
 
     let out = backend.run(&job).expect("ran");
     assert!(out.truncated, "kept {} bytes", out.stdout.len());
-    assert!(!out.timed_out, "an output bomb was reported as a hang: {out:?}");
+    assert!(
+        !out.timed_out,
+        "an output bomb was reported as a hang: {out:?}"
+    );
     assert_eq!(out.exit_code, Some(5), "the exit code survived the flood");
-    assert!(out.stdout.len() <= 64 * 1024, "kept {} bytes", out.stdout.len());
+    assert!(
+        out.stdout.len() <= 64 * 1024,
+        "kept {} bytes",
+        out.stdout.len()
+    );
 }
 
 /// `/tmp` is a bounded tmpfs, so a runaway write fills a ceiling, not the user's disk.
@@ -352,7 +414,10 @@ fn the_scratch_filesystem_is_bounded() {
         180,
     );
     let mb: u64 = out.stdout.trim().parse().unwrap_or(0);
-    assert!(mb > 0 && mb < 512, "wrote {mb} MiB into a 256 MiB tmpfs: {out:?}");
+    assert!(
+        mb > 0 && mb < 512,
+        "wrote {mb} MiB into a 256 MiB tmpfs: {out:?}"
+    );
 }
 
 /// The process cap is `--pids-limit`, not `ulimit -u`, because a container shares the
@@ -372,11 +437,17 @@ fn the_process_cap_is_the_containers_own() {
          if [ $? -eq 0 ]; then ok=$((ok+1)); fi; i=$((i+1)); done; echo spawned=$ok",
         30,
     );
-    job.limits = Limits { processes: 16, ..Limits::default() };
+    job.limits = Limits {
+        processes: 16,
+        ..Limits::default()
+    };
 
     let started = std::time::Instant::now();
     let out = backend.run(&job).expect("ran");
-    assert!(started.elapsed().as_secs() < 60, "the run outlived its deadline");
+    assert!(
+        started.elapsed().as_secs() < 60,
+        "the run outlived its deadline"
+    );
     assert!(
         !out.stdout.contains("spawned=64"),
         "64 concurrent processes under a cap of 16: the cap did not apply: {out:?}"
@@ -393,7 +464,10 @@ fn a_container_whose_owner_died_is_reaped() {
     // The engine detection chose, at the path it chose. Hard-coded `docker` staged the
     // orphan under an engine that was not the one asked to reap it.
     let Backend::Container { cli, image, .. } = &backend else {
-        panic!("container() hands back a container backend, not {}", backend.name())
+        panic!(
+            "container() hands back a container backend, not {}",
+            backend.name()
+        )
     };
 
     // Above `pid_max`, so it names no process and cannot be reused mid-test.
@@ -416,12 +490,21 @@ fn a_container_whose_owner_died_is_reaped() {
 
     let running = |name: &str| {
         let out = std::process::Command::new(cli)
-            .args(["ps", "--filter", &format!("name={name}"), "--format", "{{.Names}}"])
+            .args([
+                "ps",
+                "--filter",
+                &format!("name={name}"),
+                "--format",
+                "{{.Names}}",
+            ])
             .output()
             .expect("ask the engine what is running");
         String::from_utf8_lossy(&out.stdout).contains(name)
     };
-    assert!(running(&name), "the staged orphan is not running, so this proves nothing");
+    assert!(
+        running(&name),
+        "the staged orphan is not running, so this proves nothing"
+    );
 
     // Detection is what reaps. Any container command performs one.
     let _ = Backend::choose(Want::Container, None).expect("backend");
@@ -429,9 +512,14 @@ fn a_container_whose_owner_died_is_reaped() {
 
     let survived = running(&name);
     if survived {
-        let _ = std::process::Command::new(cli).args(["kill", &name]).output();
+        let _ = std::process::Command::new(cli)
+            .args(["kill", &name])
+            .output();
     }
-    assert!(!survived, "a container whose owner is gone outlived the next detection");
+    assert!(
+        !survived,
+        "a container whose owner is gone outlived the next detection"
+    );
 }
 
 /// A view naming a directory the caller never created is refused, not left to the engine.
@@ -463,10 +551,15 @@ fn a_view_naming_a_missing_directory_is_refused() {
 fn a_warmed_set_is_the_images_own_and_mounts_read_only() {
     let Some(backend) = container() else { return };
     let Backend::Container { image, .. } = &backend else {
-        panic!("container() hands back a container backend, not {}", backend.name())
+        panic!(
+            "container() hands back a container backend, not {}",
+            backend.name()
+        )
     };
     // Small, pure Python, no dependencies of its own.
-    let declared = Deps { python: vec!["idna==3.10".to_string()] };
+    let declared = Deps {
+        python: vec!["idna==3.10".to_string()],
+    };
 
     let warmed = deps::warm(&declared, false, Runtime::of(&backend))
         .expect("warm into the image's runtime")
@@ -481,7 +574,11 @@ fn a_warmed_set_is_the_images_own_and_mounts_read_only() {
         image.id,
         image.arch
     );
-    assert!(warmed.path.is_dir(), "the host owns the set: {}", warmed.path.display());
+    assert!(
+        warmed.path.is_dir(),
+        "the host owns the set: {}",
+        warmed.path.display()
+    );
     assert!(
         warmed.resolved.iter().any(|d| d == "idna==3.10"),
         "the manifest must name what landed on disk: {:?}",
@@ -515,8 +612,14 @@ fn a_warmed_set_is_the_images_own_and_mounts_read_only() {
     let out = backend
         .run(&Job::new(&dir, WORK, "work", &probe, 60).with_deps(Some(&warmed.path)))
         .expect("ran");
-    assert!(out.stdout.contains("mounted"), "the set was not mounted at all: {out:?}");
-    assert!(!out.succeeded(), "a job wrote into the shared dependency set: {out:?}");
+    assert!(
+        out.stdout.contains("mounted"),
+        "the set was not mounted at all: {out:?}"
+    );
+    assert!(
+        !out.succeeded(),
+        "a job wrote into the shared dependency set: {out:?}"
+    );
     assert!(
         !warmed.path.join("tampered").exists(),
         "a write reached the host's cache: {}",
@@ -527,6 +630,9 @@ fn a_warmed_set_is_the_images_own_and_mounts_read_only() {
     let again = deps::warm(&declared, false, Runtime::of(&backend))
         .expect("warm a set that is already present")
         .expect("the same declaration warms the same set");
-    assert!(!again.fetched, "the second warm refetched a set already on disk: {again:?}");
+    assert!(
+        !again.fetched,
+        "the second warm refetched a set already on disk: {again:?}"
+    );
     assert_eq!(again.path, warmed.path, "and it is the same set");
 }

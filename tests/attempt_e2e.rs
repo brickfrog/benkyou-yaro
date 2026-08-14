@@ -118,13 +118,20 @@ fn hidden_grading_leaves_no_checker_beside_the_learners_work() {
     // The grade itself still happened and still says something.
     assert!(report.reward.is_some(), "no reward file was read back");
 
-    assert!(!root.join("check").exists(), "the checker was left in the learner's directory");
+    assert!(
+        !root.join("check").exists(),
+        "the checker was left in the learner's directory"
+    );
     assert!(!root.join("out").exists(), "the run output was left behind");
     let left: Vec<_> = fs::read_dir(&root)
         .expect("readdir")
         .map(|e| e.expect("entry").file_name())
         .collect();
-    assert_eq!(left, vec!["work"], "grading left more than the workspace behind");
+    assert_eq!(
+        left,
+        vec!["work"],
+        "grading left more than the workspace behind"
+    );
 }
 
 /// The other half of the same flag. A visible exercise leaves its run in place, because
@@ -138,8 +145,14 @@ fn a_visible_exercise_leaves_its_run_for_inspection() {
     attempt::open(&dir, &root, &sandbox()).expect("open");
     attempt::grade(&dir, &task, &root, &sandbox()).expect("grade");
 
-    assert!(root.join("check").exists(), "a visible exercise should leave its checker");
-    assert!(root.join("out").exists(), "a visible exercise should leave its output");
+    assert!(
+        root.join("check").exists(),
+        "a visible exercise should leave its checker"
+    );
+    assert!(
+        root.join("out").exists(),
+        "a visible exercise should leave its output"
+    );
 }
 
 /// The answer must not be readable out of the directory the learner works in.
@@ -149,7 +162,10 @@ fn the_reference_solution_never_reaches_the_workspace() {
     let root = workspace("nosol");
 
     let work = attempt::open(&dir, &root, &sandbox()).expect("open");
-    assert!(dir.join("solution/solve.sh").exists(), "the fixture has a solution to leak");
+    assert!(
+        dir.join("solution/solve.sh").exists(),
+        "the fixture has a solution to leak"
+    );
     assert!(!work.join("solve.sh").exists());
     assert!(!work.join("solution").exists());
     assert!(!work.join("check").exists());
@@ -164,7 +180,10 @@ fn opening_refuses_to_clobber_existing_work() {
     let work = attempt::open(&dir, &root, &sandbox()).expect("open");
     fs::write(work.join("solution.py"), "# an hour of my life\n").expect("write");
 
-    assert!(attempt::open(&dir, &root, &sandbox()).is_err(), "a second open overwrote the workspace");
+    assert!(
+        attempt::open(&dir, &root, &sandbox()).is_err(),
+        "a second open overwrote the workspace"
+    );
     assert_eq!(
         fs::read_to_string(work.join("solution.py")).expect("read"),
         "# an hour of my life\n"
@@ -175,7 +194,10 @@ fn opening_refuses_to_clobber_existing_work() {
 /// learner's. Partial credit is the worst gating dimension, not the average.
 #[test]
 fn a_verdict_is_worth_practice_only_when_it_judges_the_learner() {
-    assert_eq!(practice_score(&Verdict::CheckBroken("no reward file".into())), None);
+    assert_eq!(
+        practice_score(&Verdict::CheckBroken("no reward file".into())),
+        None
+    );
     assert_eq!(practice_score(&Verdict::Pass), Some(1.0));
     assert_eq!(practice_score(&Verdict::Timeout(60)), Some(0.0));
     assert_eq!(practice_score(&Verdict::Fail(BTreeMap::new())), Some(0.0));

@@ -78,7 +78,9 @@ pub fn normalize_tag(tag: &str) -> String {
 }
 
 /// Tags that are allowed to carry markup through to a card.
-const ALLOWED: &[&str] = &["pre", "code", "b", "i", "em", "strong", "br", "ul", "ol", "li"];
+const ALLOWED: &[&str] = &[
+    "pre", "code", "b", "i", "em", "strong", "br", "ul", "ol", "li",
+];
 
 /// Escape a field for Anki, keeping a small allowlist of markup.
 ///
@@ -208,7 +210,10 @@ pub struct AnkiConnect {
 
 impl Default for AnkiConnect {
     fn default() -> Self {
-        Self { addr: DEFAULT_ADDR.into(), timeout: Duration::from_secs(10) }
+        Self {
+            addr: DEFAULT_ADDR.into(),
+            timeout: Duration::from_secs(10),
+        }
     }
 }
 
@@ -241,17 +246,28 @@ impl AnkiConnect {
             Ok(p) if p > 0 => {}
             _ => return bad(&format!("`{port}` is not a port")),
         }
-        Ok(Self { addr: addr.to_string(), ..Default::default() })
+        Ok(Self {
+            addr: addr.to_string(),
+            ..Default::default()
+        })
     }
 
-    pub fn call(&self, action: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    pub fn call(
+        &self,
+        action: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let body = serde_json::json!({ "action": action, "version": 6, "params": params });
         let body = serde_json::to_string(&body).map_err(|e| e.to_string())?;
 
         let mut stream = TcpStream::connect(&self.addr)
             .map_err(|e| format!("AnkiConnect at {}: {e} (is Anki running?)", self.addr))?;
-        stream.set_read_timeout(Some(self.timeout)).map_err(|e| e.to_string())?;
-        stream.set_write_timeout(Some(self.timeout)).map_err(|e| e.to_string())?;
+        stream
+            .set_read_timeout(Some(self.timeout))
+            .map_err(|e| e.to_string())?;
+        stream
+            .set_write_timeout(Some(self.timeout))
+            .map_err(|e| e.to_string())?;
 
         let request = format!(
             "POST / HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -259,7 +275,9 @@ impl AnkiConnect {
             body.len(),
             body
         );
-        stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|e| e.to_string())?;
 
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).map_err(|e| e.to_string())?;
@@ -272,9 +290,10 @@ impl AnkiConnect {
         let parsed: serde_json::Value =
             serde_json::from_str(payload.trim()).map_err(|e| format!("{e}: {payload}"))?;
         match parsed.get("error") {
-            Some(serde_json::Value::Null) | None => {
-                Ok(parsed.get("result").cloned().unwrap_or(serde_json::Value::Null))
-            }
+            Some(serde_json::Value::Null) | None => Ok(parsed
+                .get("result")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)),
             Some(e) => Err(format!("AnkiConnect: {e}")),
         }
     }
@@ -319,7 +338,11 @@ impl AnkiConnect {
         let existing = self.call("modelNames", serde_json::json!({}))?;
         let have: Vec<String> = existing
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let mut created = Vec::new();
@@ -355,7 +378,11 @@ impl AnkiConnect {
     /// existing note in place, so its review history and FSRS state survive.
     pub fn push(&self, cards: &[Card], deck: &str) -> Result<PushReport, String> {
         self.call("createDeck", serde_json::json!({ "deck": deck }))?;
-        let mut report = PushReport { added: vec![], updated: vec![], failed: vec![] };
+        let mut report = PushReport {
+            added: vec![],
+            updated: vec![],
+            failed: vec![],
+        };
 
         for card in cards {
             let guid = note_guid(&card.concept_id, card.role);

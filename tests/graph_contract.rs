@@ -172,17 +172,17 @@ fn plan_is_prerequisite_closed_and_ordered() {
 fn validate_reports_a_cycle_without_cutting_any_edge() {
     let mut g = graph(
         vec![node("a", 10), node("b", 10), node("c", 10)],
-        vec![
-            req("a", "b", 0.9),
-            req("b", "c", 0.1),
-            req("c", "a", 0.8),
-        ],
+        vec![req("a", "b", 0.9), req("b", "c", 0.1), req("c", "a", 0.8)],
     );
     let before = g.edges.clone();
     let report = g.validate(RELEVANCE_FLOOR, NODE_CAP);
 
     assert_eq!(report.cycles.len(), 1, "{report:?}");
-    assert_eq!(report.cycles[0].len(), 3, "the whole cycle, not one suspect");
+    assert_eq!(
+        report.cycles[0].len(),
+        3,
+        "the whole cycle, not one suspect"
+    );
     assert_eq!(g.edges, before, "the graph paid for the report");
     assert!(!report.is_clean());
 
@@ -200,8 +200,14 @@ fn validate_is_idempotent_and_deterministic() {
                 node("b", 10),
                 node("dup", 10),
                 node("dup", 20),
-                Node { relevance: 0.01, ..node("weak", 10) },
-                Node { relevance: f32::NAN, ..node("nan", 10) },
+                Node {
+                    relevance: 0.01,
+                    ..node("weak", 10)
+                },
+                Node {
+                    relevance: f32::NAN,
+                    ..node("nan", 10)
+                },
             ],
             vec![
                 req("a", "b", 0.5),
@@ -235,7 +241,10 @@ fn validate_is_idempotent_and_deterministic() {
     assert!(r2.dropped_irrelevant.is_empty());
     assert!(r2.dropped_over_cap.is_empty());
     assert!(r2.dangling_edges.is_empty());
-    assert_eq!(r2.cycles, r1.cycles, "the cycle stopped being named: {r2:?}");
+    assert_eq!(
+        r2.cycles, r1.cycles,
+        "the cycle stopped being named: {r2:?}"
+    );
     assert_eq!(shape(&first), shape(&again), "validate is not idempotent");
 
     // Same input, same output, every time.
@@ -247,7 +256,10 @@ fn validate_is_idempotent_and_deterministic() {
     assert!(r1.duplicate_nodes.iter().any(|n| n.id == "dup"));
     assert!(r1.dropped_irrelevant.iter().any(|n| n.id == "weak"));
     // The self-loop and the edge naming a missing node are both dangling material.
-    assert!(r1.dangling_edges.iter().any(|e| e.from == "a" && e.to == "a"));
+    assert!(r1
+        .dangling_edges
+        .iter()
+        .any(|e| e.from == "a" && e.to == "a"));
     assert!(r1.dangling_edges.iter().any(|e| e.from == "missing"));
     // A NaN relevance is not below the floor, so the node survives.
     assert!(first.contains("nan"));
@@ -258,8 +270,19 @@ fn validate_is_idempotent_and_deterministic() {
 #[test]
 fn closure_collapses_the_ancestor_cone() {
     let g = graph(
-        vec![node("a", 1), node("b", 1), node("c", 1), node("d", 1), node("z", 1)],
-        vec![req("a", "b", 1.0), req("a", "c", 1.0), req("b", "d", 1.0), req("c", "d", 1.0)],
+        vec![
+            node("a", 1),
+            node("b", 1),
+            node("c", 1),
+            node("d", 1),
+            node("z", 1),
+        ],
+        vec![
+            req("a", "b", 1.0),
+            req("a", "c", 1.0),
+            req("b", "d", 1.0),
+            req("c", "d", 1.0),
+        ],
     );
 
     let known: BTreeSet<NodeId> = ["d".to_string()].into_iter().collect();
@@ -270,7 +293,10 @@ fn closure_collapses_the_ancestor_cone() {
         vec!["a", "b", "c", "d"]
     );
     assert!(g.is_downward_closed(&closed));
-    assert!(!g.is_downward_closed(&known), "{{d}} alone is not downward-closed");
+    assert!(
+        !g.is_downward_closed(&known),
+        "{{d}} alone is not downward-closed"
+    );
 
     // z is isolated, so it is the only thing left to start on besides nothing.
     assert_eq!(ids(&g.outer_fringe(&closed)), vec!["z"]);
@@ -297,18 +323,23 @@ fn a_dropped_node_can_be_restored_from_the_report_alone() {
     let report = g.validate(RELEVANCE_FLOOR, NODE_CAP);
 
     // Gone from the graph, so the file on disk is now missing it.
-    assert_eq!(ids(&g.nodes.iter().map(|n| n.id.clone()).collect::<Vec<_>>()), vec!["kept"]);
+    assert_eq!(
+        ids(&g.nodes.iter().map(|n| n.id.clone()).collect::<Vec<_>>()),
+        vec!["kept"]
+    );
 
     // Every authored field comes back, not only the name.
     assert_eq!(report.dropped_irrelevant, vec![authored.clone()]);
 
     // Put it back and the graph is whole again, through the same serialisation the goal
     // file uses.
-    let recovered: Node = serde_json::from_str(
-        &serde_json::to_string(&report.dropped_irrelevant[0]).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(recovered, authored, "the report must round-trip through JSON");
+    let recovered: Node =
+        serde_json::from_str(&serde_json::to_string(&report.dropped_irrelevant[0]).unwrap())
+            .unwrap();
+    assert_eq!(
+        recovered, authored,
+        "the report must round-trip through JSON"
+    );
 
     let mut restored = graph(vec![node("kept", 10), recovered], vec![]);
     restored.nodes[1].relevance = 1.0; // the author fixes what got it dropped
@@ -335,7 +366,11 @@ fn nodes_dropped_over_cap_come_back_whole_and_least_relevant_first() {
 
     // Two dropped, least relevant first: n1 (0.4) then n3 (0.5).
     assert_eq!(
-        report.dropped_over_cap.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+        report
+            .dropped_over_cap
+            .iter()
+            .map(|n| n.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["n1", "n3"]
     );
     // Whole nodes, matched to the right ids rather than shuffled by the index dance.

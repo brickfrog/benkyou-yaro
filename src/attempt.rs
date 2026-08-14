@@ -114,13 +114,20 @@ fn grade_in(
     copy_dir(&exercise_dir.join("check"), &check)?;
     fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
 
-    let outcome = backend.run(&Job::new(
-        root,
-        &[(WORK, Access::Write), (CHECK, Access::Read), (OUT, Access::Write)],
-        "",
-        &task.verify.cmd,
-        task.limits.check_secs,
-    ).with_deps(deps.as_deref()))?;
+    let outcome = backend.run(
+        &Job::new(
+            root,
+            &[
+                (WORK, Access::Write),
+                (CHECK, Access::Read),
+                (OUT, Access::Write),
+            ],
+            "",
+            &task.verify.cmd,
+            task.limits.check_secs,
+        )
+        .with_deps(deps.as_deref()),
+    )?;
     let reward = fs::read_to_string(out.join(&task.verify.reward)).ok();
     let verdict = exercise::grade(
         &task.verify,
@@ -189,30 +196,16 @@ pub struct Credited {
 /// Refuses a concept the graph does not contain. A score recorded against a node
 /// nobody declared is a score nothing will ever read again, and silently accepting
 /// it hides a typo in the exercise's `concept_id` until the schedule looks wrong.
-pub fn credit(
-    goal_path: &Path,
-    concept: &str,
-    score: f32,
-    today: i64,
-) -> Result<Credited, String> {
+pub fn credit(goal_path: &Path, concept: &str, score: f32, today: i64) -> Result<Credited, String> {
     let graph = crate::store::load_graph(goal_path)?;
     if !graph.contains(concept) {
-        return Err(format!(
-            "no node `{concept}` in {}",
-            goal_path.display()
-        ));
+        return Err(format!("no node `{concept}` in {}", goal_path.display()));
     }
     let fpath = crate::store::fluency_path(goal_path);
     let mut fluencies = crate::store::load_fluencies(&fpath)?;
     let cfg = crate::sched::SchedConfig::default();
-    let also_credited = crate::sched::record_attempt(
-        &graph,
-        &mut fluencies,
-        concept,
-        score,
-        today,
-        &cfg,
-    );
+    let also_credited =
+        crate::sched::record_attempt(&graph, &mut fluencies, concept, score, today, &cfg);
     crate::store::save_fluencies(&fpath, &fluencies)?;
     Ok(Credited {
         node: concept.to_string(),

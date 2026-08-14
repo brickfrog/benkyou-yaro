@@ -12,15 +12,15 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use benkyou::bank;
 use benkyou::assess::{self, AssessConfig, RecordOutcome, Step};
+use benkyou::bank;
 use benkyou::exercise::{self, GateOutcome, Task};
 use benkyou::gate::run_gate;
-use benkyou::run::{Backend, Want};
 use benkyou::graph::{
     Edge, EdgeType, Goal, Graph, Kind, Node, Provenance, State, Verdict, NODE_CAP, RELEVANCE_FLOOR,
 };
 use benkyou::order::{self, OrderKind};
+use benkyou::run::{Backend, Want};
 use benkyou::sched::{self, SchedConfig};
 use benkyou::store;
 
@@ -567,7 +567,7 @@ fn run(args: &[String]) -> Result<String, String> {
             }
             if known.is_empty() && unknown.is_empty() && prior.is_empty() {
                 return Err(
-                    "seed: nothing declared — pass --known, --unknown or --prior".to_string()
+                    "seed: nothing declared — pass --known, --unknown or --prior".to_string(),
                 );
             }
 
@@ -645,12 +645,22 @@ fn run(args: &[String]) -> Result<String, String> {
             if !graph.contains(&node) {
                 return Err(format!("record: no node `{node}` in this graph"));
             }
-            let probe = graph.node(&node).map(|n| n.probe.clone()).unwrap_or_default();
+            let probe = graph
+                .node(&node)
+                .map(|n| n.probe.clone())
+                .unwrap_or_default();
             let before_known = graph.state.known.len();
             let before_unknown = graph.state.unknown.len();
 
             let mut state = graph.state.clone();
-            let outcome = assess::record(&graph, &mut state, &node, verdict, &probe, &store::now_iso());
+            let outcome = assess::record(
+                &graph,
+                &mut state,
+                &node,
+                verdict,
+                &probe,
+                &store::now_iso(),
+            );
             graph.state = state;
             store::save_graph(&path, &graph)?;
 
@@ -780,8 +790,7 @@ fn run(args: &[String]) -> Result<String, String> {
                         .into_iter()
                         .next()
                         .ok_or_else(|| {
-                            "order: no probe has been skipped, so none needs rewriting"
-                                .to_string()
+                            "order: no probe has been skipped, so none needs rewriting".to_string()
                         })?,
                     _ => {
                         let fluencies = store::load_fluencies(&store::fluency_path(&path))?;
@@ -834,10 +843,10 @@ fn run(args: &[String]) -> Result<String, String> {
 
         "cards" => {
             let path = need(0, "cards.json")?;
-            let text = std::fs::read_to_string(&path)
-                .map_err(|e| format!("{}: {e}", path.display()))?;
-            let cards: Vec<benkyou::anki::Card> = serde_json::from_str(&text)
-                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let text =
+                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let cards: Vec<benkyou::anki::Card> =
+                serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
             let deck = flag(args, "--deck").unwrap_or_else(|| "benkyou".to_string());
 
             // Resolved before the dry run rather than beside the push. The dry run is
@@ -1086,13 +1095,9 @@ fn run(args: &[String]) -> Result<String, String> {
             let mut practice = serde_json::Value::Null;
             if let (Some(goal), Some(score)) = (flag(args, "--goal"), score) {
                 let gpath = store::goal_path(&goal).map_err(|e| format!("grade: {e}"))?;
-                let c = benkyou::attempt::credit(
-                    &gpath,
-                    &task.task.concept_id,
-                    score,
-                    store::today(),
-                )
-                .map_err(|e| format!("grade: {e}"))?;
+                let c =
+                    benkyou::attempt::credit(&gpath, &task.task.concept_id, score, store::today())
+                        .map_err(|e| format!("grade: {e}"))?;
                 practice = serde_json::json!({
                     "node": c.node,
                     "score": c.score,

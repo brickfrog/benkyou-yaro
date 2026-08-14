@@ -59,7 +59,11 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { setup_secs: 60, learner_secs: 900, check_secs: 120 }
+        Self {
+            setup_secs: 60,
+            learner_secs: 900,
+            check_secs: 120,
+        }
     }
 }
 
@@ -223,7 +227,9 @@ impl Runner {
                 (Some(was), Some(now)) => {
                     format!("gated against runner image {was}, running {now}")
                 }
-                (Some(was), None) => format!("gated against runner image {was}, running without one"),
+                (Some(was), None) => {
+                    format!("gated against runner image {was}, running without one")
+                }
                 (None, Some(now)) => format!("gated without a runner image, running {now}"),
                 (None, None) => unreachable!("equal images are not a difference"),
             });
@@ -531,21 +537,31 @@ pub fn gate_warnings(dir: &Path, backend: &crate::run::Backend) -> Vec<String> {
 /// and fails against the next looks like a broken exercise, and this is the one line
 /// that says otherwise.
 fn deps_drift(dir: &Path, gate: &Gate, backend: &crate::run::Backend) -> Vec<String> {
-    let Ok(task) = load(dir) else { return Vec::new() };
-    // A set that cannot be identified is reported by `require` on the run path, where it
-    // is an error. Here it would be noise on top of that.
-    let Ok(Some(set)) = crate::deps::require(&task.deps, crate::deps::Runtime::of(backend))
-    else {
+    let Ok(task) = load(dir) else {
         return Vec::new();
     };
-    let Ok(now) = crate::deps::resolved(&set) else { return Vec::new() };
+    // A set that cannot be identified is reported by `require` on the run path, where it
+    // is an error. Here it would be noise on top of that.
+    let Ok(Some(set)) = crate::deps::require(&task.deps, crate::deps::Runtime::of(backend)) else {
+        return Vec::new();
+    };
+    let Ok(now) = crate::deps::resolved(&set) else {
+        return Vec::new();
+    };
     if gate.deps == now {
         return Vec::new();
     }
-    let gone: Vec<&str> =
-        gate.deps.iter().filter(|d| !now.contains(d)).map(String::as_str).collect();
-    let added: Vec<&str> =
-        now.iter().filter(|d| !gate.deps.contains(d)).map(String::as_str).collect();
+    let gone: Vec<&str> = gate
+        .deps
+        .iter()
+        .filter(|d| !now.contains(d))
+        .map(String::as_str)
+        .collect();
+    let added: Vec<&str> = now
+        .iter()
+        .filter(|d| !gate.deps.contains(d))
+        .map(String::as_str)
+        .collect();
     vec![format!(
         "dependency set changed since gating: was [{}], now [{}]",
         gone.join(", "),
@@ -655,9 +671,7 @@ pub fn grade(
             Some(score) => {
                 failed.insert(dim.clone(), score);
             }
-            None => {
-                return Verdict::CheckBroken(format!("grader never reported gating `{dim}`"))
-            }
+            None => return Verdict::CheckBroken(format!("grader never reported gating `{dim}`")),
         }
     }
 
@@ -752,8 +766,7 @@ pub fn gate_outcome(
 /// Load a `task.toml` from an exercise directory.
 pub fn load(dir: &Path) -> Result<Task, String> {
     let path = dir.join("task.toml");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -787,7 +800,10 @@ mod tests {
             trap: "a named misconception".into(),
             files: BTreeMap::new(),
         });
-        vec![(&*ONE, Verdict::Fail(BTreeMap::from([("correctness".into(), 0.0)])))]
+        vec![(
+            &*ONE,
+            Verdict::Fail(BTreeMap::from([("correctness".into(), 0.0)])),
+        )]
     }
 
     /// The failure the whole feature exists for.
@@ -875,8 +891,14 @@ mod tests {
         assert!(old.predates_known_bad());
         assert!(!old.holds());
 
-        let rejected = Gate { solution_passes: false, ..old.clone() };
-        assert!(!rejected.predates_known_bad(), "a rejection is not merely old");
+        let rejected = Gate {
+            solution_passes: false,
+            ..old.clone()
+        };
+        assert!(
+            !rejected.predates_known_bad(),
+            "a rejection is not merely old"
+        );
     }
 
     #[test]
@@ -886,7 +908,10 @@ mod tests {
         assert_eq!(r.score("correctness"), Some(1.0));
         assert_eq!(r.score("approach"), Some(0.5));
         assert_eq!(r.detail.as_deref(), Some("ok"));
-        assert!(!r.dimensions.contains_key("detail"), "detail is not a dimension");
+        assert!(
+            !r.dimensions.contains_key("detail"),
+            "detail is not a dimension"
+        );
     }
 
     #[test]
@@ -930,12 +955,18 @@ mod tests {
             grade(&v, Some(1), None, Some(r#"{"correctness": 1.0}"#)),
             Verdict::CheckBroken(_)
         ));
-        assert!(matches!(grade(&v, Some(0), None, None), Verdict::CheckBroken(_)));
+        assert!(matches!(
+            grade(&v, Some(0), None, None),
+            Verdict::CheckBroken(_)
+        ));
         assert!(matches!(
             grade(&v, Some(0), None, Some("garbage")),
             Verdict::CheckBroken(_)
         ));
-        assert!(matches!(grade(&v, None, Some(120), None), Verdict::Timeout(120)));
+        assert!(matches!(
+            grade(&v, None, Some(120), None),
+            Verdict::Timeout(120)
+        ));
     }
 
     /// A gating dimension the grader never wrote is a broken grader, not a failure.
@@ -955,19 +986,43 @@ mod tests {
 
         // Both hold.
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &fail, &caught(), "t", "d", &crate::run::Backend::UnsafeHost, &[]),
+            gate_outcome(
+                &Verdict::Pass,
+                &fail,
+                &caught(),
+                "t",
+                "d",
+                &crate::run::Backend::UnsafeHost,
+                &[]
+            ),
             GateOutcome::Validated(_)
         ));
 
         // Unsolvable as written.
         assert!(matches!(
-            gate_outcome(&fail, &fail, &caught(), "t", "d", &crate::run::Backend::UnsafeHost, &[]),
+            gate_outcome(
+                &fail,
+                &fail,
+                &caught(),
+                "t",
+                "d",
+                &crate::run::Backend::UnsafeHost,
+                &[]
+            ),
             GateOutcome::Rejected(GateFailure::SolutionFailed(_))
         ));
 
         // Vacuous: the empty workspace already passes.
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &Verdict::Pass, &caught(), "t", "d", &crate::run::Backend::UnsafeHost, &[]),
+            gate_outcome(
+                &Verdict::Pass,
+                &Verdict::Pass,
+                &caught(),
+                "t",
+                "d",
+                &crate::run::Backend::UnsafeHost,
+                &[]
+            ),
             GateOutcome::Rejected(GateFailure::ChecksVacuous(_))
         ));
     }
@@ -978,7 +1033,15 @@ mod tests {
     fn a_broken_grader_on_the_empty_run_does_not_validate() {
         let broken = Verdict::CheckBroken("boom".into());
         assert!(matches!(
-            gate_outcome(&Verdict::Pass, &broken, &caught(), "t", "d", &crate::run::Backend::UnsafeHost, &[]),
+            gate_outcome(
+                &Verdict::Pass,
+                &broken,
+                &caught(),
+                "t",
+                "d",
+                &crate::run::Backend::UnsafeHost,
+                &[]
+            ),
             GateOutcome::Rejected(GateFailure::ChecksVacuous(_))
         ));
     }
@@ -1052,11 +1115,17 @@ mod tests {
             bwrap: "/usr/bin/bwrap".into(),
             version: "0.11.3".into(),
         });
-        assert!(a.stale(&b).is_none(), "a point release must not ungate a library");
+        assert!(
+            a.stale(&b).is_none(),
+            "a point release must not ungate a library"
+        );
         assert_eq!(a.drift(&b).len(), 1, "but it must still be reported");
 
         let host = Runner::of(&crate::run::Backend::UnsafeHost);
-        assert!(a.stale(&host).is_some(), "isolation changed and the verdict did not");
+        assert!(
+            a.stale(&host).is_some(),
+            "isolation changed and the verdict did not"
+        );
         assert!(a.drift(&host).is_empty(), "a refusal is not also a warning");
     }
 
@@ -1083,7 +1152,10 @@ mod tests {
 
         let gated = container("29.7.2", "sha256:1111");
         let same = container("29.7.2", "sha256:1111");
-        assert!(gated.stale(&same).is_none(), "the same runtime is not staleness");
+        assert!(
+            gated.stale(&same).is_none(),
+            "the same runtime is not staleness"
+        );
         assert!(gated.drift(&same).is_empty());
 
         let newer_engine = container("30.0.0", "sha256:1111");
@@ -1091,13 +1163,20 @@ mod tests {
             gated.stale(&newer_engine).is_none(),
             "an engine upgrade must not ungate a library"
         );
-        assert_eq!(gated.drift(&newer_engine).len(), 1, "but it must still be reported");
+        assert_eq!(
+            gated.drift(&newer_engine).len(),
+            1,
+            "but it must still be reported"
+        );
 
         let other_image = container("29.7.2", "sha256:2222");
         let why = gated
             .stale(&other_image)
             .expect("a different image is a different runtime");
-        assert!(why.contains("sha256:1111") && why.contains("sha256:2222"), "{why}");
+        assert!(
+            why.contains("sha256:1111") && why.contains("sha256:2222"),
+            "{why}"
+        );
 
         // And across backends in both directions: a container verdict is not evidence
         // about a sandboxed run, and the sandbox has no image to compare at all.
@@ -1126,7 +1205,10 @@ mod tests {
         let gate: Gate = serde_json::from_str(text).expect("an old record must parse");
         assert_eq!(gate.runner.image, None);
         let again = serde_json::to_string(&gate.runner).expect("serialise");
-        assert!(!again.contains("image"), "an absent image must not be written back: {again}");
+        assert!(
+            !again.contains("image"),
+            "an absent image must not be written back: {again}"
+        );
     }
 
     #[test]
@@ -1151,7 +1233,10 @@ hidden = true
         assert_eq!(task.task.guidance_level, Guidance::Blank);
         assert_eq!(task.verify.reward, "reward.json", "default applies");
         assert_eq!(task.limits.learner_secs, 900, "default applies");
-        assert_eq!(task.workspace.run_cmd, None, "no [workspace] means no run command");
+        assert_eq!(
+            task.workspace.run_cmd, None,
+            "no [workspace] means no run command"
+        );
     }
 
     /// The `[workspace]` section is additive. Every task.toml written before it
@@ -1167,7 +1252,10 @@ hidden = true
         assert!(task.workspace.is_empty());
 
         let back = toml::to_string_pretty(&task).expect("serialize");
-        assert!(!back.contains("[workspace]"), "an absent section came back:\n{back}");
+        assert!(
+            !back.contains("[workspace]"),
+            "an absent section came back:\n{back}"
+        );
     }
 
     #[test]
@@ -1196,6 +1284,9 @@ run_cmd = "uv run --no-project solution.py"
 
         let back = toml::to_string_pretty(&task).expect("serialize");
         let again: Task = toml::from_str(&back).expect("reparse");
-        assert_eq!(again, task, "a workspace did not survive the trip through TOML");
+        assert_eq!(
+            again, task,
+            "a workspace did not survive the trip through TOML"
+        );
     }
 }

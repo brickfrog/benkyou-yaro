@@ -26,8 +26,8 @@ use serde_json::{json, Value};
 
 use crate::attempt;
 use crate::exercise::{self, Reward, Task, Verdict};
-use crate::record::{Event, Recorder};
 use crate::gate::{safe_join, WORK};
+use crate::record::{Event, Recorder};
 use crate::run::{Access, Backend, Job};
 use crate::serve::{Request, Response, ShutdownHandle};
 
@@ -314,11 +314,14 @@ impl App {
         )?;
 
         let ms = (outcome.elapsed_secs * 1000.0) as u64;
-        self.log(i, Event::Run {
-            ms,
-            exit: outcome.exit_code,
-            timed_out: outcome.timed_out,
-        });
+        self.log(
+            i,
+            Event::Run {
+                ms,
+                exit: outcome.exit_code,
+                timed_out: outcome.timed_out,
+            },
+        );
 
         Ok(json!({
             "exit": outcome.exit_code,
@@ -365,11 +368,14 @@ impl App {
         }
 
         let ms = self.elapsed(i);
-        self.log(i, Event::Submit {
-            ms,
-            verdict: verdict_tag(&att.verdict).to_string(),
-            dims: dims.clone(),
-        });
+        self.log(
+            i,
+            Event::Submit {
+                ms,
+                verdict: verdict_tag(&att.verdict).to_string(),
+                dims: dims.clone(),
+            },
+        );
 
         Ok(json!({
             "verdict": verdict_tag(&att.verdict),
@@ -443,9 +449,10 @@ fn verdict_tag(v: &Verdict) -> &'static str {
 }
 
 fn dir_has_files(dir: &Path) -> bool {
-    std::fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(false)
+    std::fs::read_dir(dir)
+        .map(|mut d| d.next().is_some())
+        .unwrap_or(false)
 }
-
 
 /// Read the workspace as editable text.
 ///
@@ -463,7 +470,10 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<Value>) -> Result<(), St
         .collect();
     paths.sort();
     for p in paths {
-        let name = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if p.is_dir() {
             if !is_noise_dir(&name) {
                 collect_files(root, &p, out)?;
@@ -539,7 +549,10 @@ mod tests {
 
     #[test]
     fn a_plain_relative_path_lands_in_the_workspace() {
-        assert_eq!(safe_join(&work(), "solution.py").unwrap(), work().join("solution.py"));
+        assert_eq!(
+            safe_join(&work(), "solution.py").unwrap(),
+            work().join("solution.py")
+        );
         assert_eq!(safe_join(&work(), "a/b.py").unwrap(), work().join("a/b.py"));
         assert_eq!(safe_join(&work(), "./s.py").unwrap(), work().join("s.py"));
     }
@@ -611,8 +624,7 @@ mod tests {
         ];
 
         for (i, (name, record, expected)) in cases.into_iter().enumerate() {
-            let dir =
-                std::env::temp_dir().join(format!("bk-browser-{}-{i}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("bk-browser-{}-{i}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("task.toml"), BASE).unwrap();

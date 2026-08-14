@@ -84,7 +84,10 @@ pub(crate) fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
                 let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(mode));
             }
         } else {
-            return Err(format!("{}: not a regular file or directory", src.display()));
+            return Err(format!(
+                "{}: not a regular file or directory",
+                src.display()
+            ));
         }
     }
     Ok(())
@@ -184,13 +187,16 @@ pub fn run_once(
             if !dst.join("solve.sh").exists() {
                 return Err(format!("{}: no solution/solve.sh", exercise_dir.display()));
             }
-            let applied = backend.run(&Job::new(
-                root,
-                &[(WORK, Access::Write), (SOLUTION, Access::Read)],
-                WORK,
-                "sh ../solution/solve.sh",
-                task.limits.learner_secs,
-            ).with_deps(deps))?;
+            let applied = backend.run(
+                &Job::new(
+                    root,
+                    &[(WORK, Access::Write), (SOLUTION, Access::Read)],
+                    WORK,
+                    "sh ../solution/solve.sh",
+                    task.limits.learner_secs,
+                )
+                .with_deps(deps),
+            )?;
             if !applied.succeeded() {
                 return Ok(Run {
                     root: root.to_path_buf(),
@@ -210,13 +216,20 @@ pub fn run_once(
         }
     }
 
-    let outcome = backend.run(&Job::new(
-        root,
-        &[(WORK, Access::Write), (CHECK, Access::Read), (OUT, Access::Write)],
-        "",
-        &task.verify.cmd,
-        task.limits.check_secs,
-    ).with_deps(deps))?;
+    let outcome = backend.run(
+        &Job::new(
+            root,
+            &[
+                (WORK, Access::Write),
+                (CHECK, Access::Read),
+                (OUT, Access::Write),
+            ],
+            "",
+            &task.verify.cmd,
+            task.limits.check_secs,
+        )
+        .with_deps(deps),
+    )?;
 
     let reward_path = out.join(&task.verify.reward);
     let reward_text = fs::read_to_string(&reward_path).ok();
@@ -287,7 +300,9 @@ fn check_run_cmd(task: &Task, solution_root: &Path, backend: &Backend) -> Option
     let secs = task.limits.learner_secs;
     // An unwarmed set makes this advisory unrunnable, not the exercise unsound: the
     // caller already refused before getting here, so this only ever sees `Ok`.
-    let deps = crate::deps::require(&task.deps, crate::deps::Runtime::of(backend)).ok().flatten();
+    let deps = crate::deps::require(&task.deps, crate::deps::Runtime::of(backend))
+        .ok()
+        .flatten();
     let job = Job::new(solution_root, &[(WORK, Access::Write)], WORK, cmd, secs)
         .with_deps(deps.as_deref());
     match backend.run(&job) {
@@ -392,7 +407,13 @@ pub fn run_gate(
         })
     };
 
-    Ok(GateReport { outcome, solution, empty, known_bad, warnings })
+    Ok(GateReport {
+        outcome,
+        solution,
+        empty,
+        known_bad,
+        warnings,
+    })
 }
 
 #[cfg(test)]
@@ -412,7 +433,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("benkyou-gate-unit-{name}"));
         let _ = fs::remove_dir_all(&dir);
         put(dir.join("setup/answer.txt"), "");
-        put(dir.join("solution/solve.sh"), "printf 'done\\n' > answer.txt\n");
+        put(
+            dir.join("solution/solve.sh"),
+            "printf 'done\\n' > answer.txt\n",
+        );
         put(
             dir.join("check/check.sh"),
             "mkdir -p out\n\
@@ -506,11 +530,21 @@ mod tests {
         assert!(report.warnings.is_empty());
 
         let body = report.json();
-        let mut keys: Vec<&str> = body.as_object().expect("object").keys().map(|s| s.as_str()).collect();
+        let mut keys: Vec<&str> = body
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["empty_verdict", "known_bad_verdicts", "outcome", "solution_verdict"],
+            [
+                "empty_verdict",
+                "known_bad_verdicts",
+                "outcome",
+                "solution_verdict"
+            ],
             "the report grew or lost a field"
         );
         assert_eq!(body["known_bad_verdicts"][0]["id"], "always_empty");

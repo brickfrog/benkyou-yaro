@@ -88,7 +88,10 @@ fn check_digest(digest: &str) -> Result<&str, String> {
     if digest.len() < 8 || digest.len() > 64 {
         return Err(format!("`{digest}`: not a digest"));
     }
-    if !digest.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+    if !digest
+        .bytes()
+        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
         return Err(format!("`{digest}`: not lowercase hex"));
     }
     Ok(digest)
