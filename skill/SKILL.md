@@ -30,8 +30,8 @@ Every command below is the `benkyou` binary. Check it is there before planning a
 around it:
 
 ```sh
-benkyou --help || cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.4.0
-benkyou --version                            # this file documents benkyou 0.4.x
+benkyou --help || cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.5.0
+benkyou --version                            # this file documents benkyou 0.5.x
 ```
 
 This file travels on its own, so do not assume a checkout is nearby — `--git` works from
@@ -489,12 +489,24 @@ Be straight with the user about this rather than implying otherwise:
   any other image refuses. That is as far as it goes — the engine, the kernel and the
   architecture still do not travel, and one image reference resolves to a different id
   per architecture, so a verdict earned on arm64 is refused on amd64.
+- No wheel hashes behind a warmed set. It records the names and versions that were
+  installed, and those are what a later run checks. The same exact-pinned list warmed
+  twice can install different bytes if the index republishes a file under a version it
+  already served, and nothing here would see it. The pins are the identity.
+- No aggregate disk limit. Any one file a script writes is capped and the number of files
+  is not: the workspace is a bind mount of the host's filesystem, so a loop writing a
+  million small files fills the user's disk under a container exactly as it does under the
+  sandbox. Nothing but the exercise bounds what the exercise writes.
 - The sandbox is not a defence against a solution author who goes looking. During
   grading the check scripts sit beside `work/` and the verify command runs in that
   directory, so a solution that goes looking can read its own grader — and a Python
   grader imports the learner's module into its own process. The gate's own reference
   run is the exception: it cannot see `check/` at all. Whoever writes the solution
   should still not read `check/`.
+- Nothing proves who owns a leftover container. One is found by a `benkyou.owner=<pid>`
+  label, which anything talking to the engine can set and which a recycled pid makes look
+  live. That sweep is tidying up after a crash, not evidence that no other run is using
+  the engine.
 - No backups. `validate` rewrites the goal file in place. What it removes is returned
   whole in the report, so a dropped node can be pasted back; keys outside the schema
   are dropped earlier, by the parser, and nothing reports those.

@@ -1,9 +1,8 @@
 //! The learner loop, end to end, against a real exercise.
 //!
 //! Two properties carry this module. An ungated exercise must not reach a learner
-//! through *either* entry point, and grading a hidden exercise must not leave the
-//! hidden cases sitting next to the learner's work — a checker copied beside their
-//! answer hands over the reference on the first grade.
+//! through either entry point. Grading a hidden exercise must not leave the hidden cases
+//! next to the learner's work, because a checker copied there hands over the reference.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -15,11 +14,9 @@ use benkyou::run::{Backend, Want};
 
 /// Copy the authored files of an exercise, and only those.
 ///
-/// `.gate.json` is skipped, and that is not tidiness: it is derived, it is gitignored,
-/// and anyone who runs `benkyou gate` on the fixture in place leaves one behind — which
-/// the tool documents as safe. Copying it made the ungated case arrive pre-gated, so a
-/// developer who had ever gated the fixture saw this suite fail for a reason that had
-/// nothing to do with their change.
+/// `.gate.json` is skipped because it is derived and gitignored. Copying it made the
+/// ungated case arrive pre-gated, so anyone who had gated the fixture saw this suite
+/// fail for an unrelated reason.
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).expect("mkdir");
     for entry in fs::read_dir(from).expect("readdir") {
@@ -36,18 +33,19 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
-/// A copy of the `dedupe` fixture with the gate's verdict recorded, as `benkyou gate`
-/// would leave it. `hidden` controls which grading path is taken.
-///
-/// The digest is computed rather than invented, because a hand-written one is exactly
-/// what `require_current` exists to reject. The verdict lands in the sidecar, so
-/// `task.toml` here is only ever written by the edit above it.
-/// Every test runs under the backend a user gets by default. Proving containment
-/// against anything else would prove nothing.
+/// `Want::Auto` accepts either isolating backend, so the refusal names both.
 fn sandbox() -> Backend {
-    Backend::choose(Want::Auto, None).expect("a sandbox: install bubblewrap")
+    Backend::choose(Want::Auto, None).expect(
+        "no sandbox and no container engine: install bubblewrap, or install \
+         docker/podman and run `benkyou runner --pull`",
+    )
 }
 
+/// A copy of the `dedupe` fixture with the gate's verdict recorded, as `benkyou gate`
+/// leaves it. `hidden` picks the grading path.
+///
+/// The digest is computed, not invented. A hand-written one is what `require_current`
+/// exists to reject.
 fn exercise_dir(name: &str, gated: bool, hidden: bool) -> PathBuf {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/exercises/dedupe");
     let dir = std::env::temp_dir().join(format!("benkyou-attempt-{name}"));
@@ -88,8 +86,8 @@ fn workspace(name: &str) -> PathBuf {
     dir
 }
 
-/// The rule the whole exercise half rests on, at both doors. `grade` matters most:
-/// a grader nobody proved discriminating would still write a score into fluency.
+/// The rule the exercise half rests on, at both doors. `grade` matters most: a grader
+/// nobody proved discriminating still writes a score into fluency.
 #[test]
 fn an_ungated_exercise_is_refused_by_both_entry_points() {
     let dir = exercise_dir("ungated", false, true);
@@ -99,8 +97,8 @@ fn an_ungated_exercise_is_refused_by_both_entry_points() {
     let opened = attempt::open(&dir, &root, &sandbox());
     assert!(opened.is_err(), "ungated exercise was opened");
 
-    // Reaching `grade` without `open` is not a way around it: hand-make the
-    // workspace and it must still refuse.
+    // Reaching `grade` without `open` is not a way around it. Hand-make the workspace
+    // and it must still refuse.
     fs::create_dir_all(root.join("work")).expect("mkdir");
     let task = exercise::load(&dir).expect("load");
     let graded = attempt::grade(&dir, &task, &root, &sandbox());
@@ -129,8 +127,8 @@ fn hidden_grading_leaves_no_checker_beside_the_learners_work() {
     assert_eq!(left, vec!["work"], "grading left more than the workspace behind");
 }
 
-/// The other half of the same flag: an exercise that is not hiding anything leaves
-/// its run in place, because inspecting it is the point.
+/// The other half of the same flag. A visible exercise leaves its run in place, because
+/// inspecting it is the point.
 #[test]
 fn a_visible_exercise_leaves_its_run_for_inspection() {
     let dir = exercise_dir("visible", true, false);
@@ -173,9 +171,8 @@ fn opening_refuses_to_clobber_existing_work() {
     );
 }
 
-/// A broken grader is the author's fault and must not touch anyone's fluency; a
-/// timeout is the learner's, and partial credit is the *worst* gating dimension
-/// rather than the average of them.
+/// A broken grader is the author's fault and must not touch fluency. A timeout is the
+/// learner's. Partial credit is the worst gating dimension, not the average.
 #[test]
 fn a_verdict_is_worth_practice_only_when_it_judges_the_learner() {
     assert_eq!(practice_score(&Verdict::CheckBroken("no reward file".into())), None);

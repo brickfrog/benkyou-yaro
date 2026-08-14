@@ -1,11 +1,8 @@
 //! Two things the binary owes an agent that has never run it before.
 //!
-//! Both were found the same way: three agents were handed the skill file and the
-//! binary and told to teach a learner a domain none of them knew. All three lost
-//! calls to the same two walls — `--help` on a subcommand answering with a missing
-//! argument, and no way to see the shape of a goal file short of feeding serde one
-//! guess at a time. Neither is a library property; both live in argument handling and
-//! in what the command actually prints, so both are pinned against a real process.
+//! Three blind-test agents lost calls to the same two walls. `--help` on a subcommand
+//! answered with a missing argument, and nothing showed the shape of a goal file.
+//! Both live in argument handling and in printed output, so both run a real process.
 
 use std::fs;
 use std::path::PathBuf;
@@ -26,8 +23,7 @@ fn benkyou(args: &[&str]) -> (bool, String, String) {
 }
 
 /// Asking a subcommand for help must not be read as asking it to do its job. `--help`
-/// sits where a `<goal>` is expected, and it used to be parsed as one — every form
-/// below answered `missing <goal>` and exited non-zero.
+/// sits where a `<goal>` is expected, and every form below once answered `missing <goal>`.
 #[test]
 fn help_is_answered_from_any_position() {
     for args in [
@@ -38,15 +34,15 @@ fn help_is_answered_from_any_position() {
         vec!["order", "--help"],
         vec!["seed", "--help"],
         vec!["schema", "--help"],
-        // Trailing, after arguments that already parsed. The flag scan has to run
-        // over the whole line, not just the position a goal would occupy.
+        // Trailing, after arguments that already parsed. The flag scan runs over the
+        // whole line, not only the position a goal occupies.
         vec!["practice", "some-goal", "some-node", "--help"],
         vec!["grade", "some-dir", "--work", "/tmp/nowhere", "-h"],
     ] {
         let (ok, stdout, stderr) = benkyou(&args);
         assert!(ok, "`benkyou {}` failed: {stderr}", args.join(" "));
-        // The tagline is prose and free to change. What this test defends is that a
-        // help request anywhere on the line prints the usage block, not an error.
+        // The tagline is prose and free to change. This test defends the fact that a
+        // help request anywhere on the line prints usage, not an error.
         assert!(
             stdout.starts_with("benkyou — ") && stdout.contains("\nUSAGE\n"),
             "`benkyou {}` printed {stdout:?} instead of usage",
@@ -67,9 +63,8 @@ fn a_bare_help_after_the_verb_is_not_a_help_request() {
     );
 }
 
-/// The whole point of the command: what it prints must be usable as written. Parsing
-/// is only half of that — a graph that parses and then loses a node to repair would
-/// teach the next agent a shape the tool immediately corrects.
+/// What the command prints must be usable as written. A graph that parses and then
+/// loses a node to repair teaches the next agent a shape the tool corrects.
 #[test]
 fn the_printed_schema_needs_no_repair() {
     let (ok, stdout, stderr) = benkyou(&["schema"]);
@@ -89,9 +84,9 @@ fn the_printed_schema_needs_no_repair() {
     assert_eq!(graph.edges.len(), edges, "validate dropped an edge");
 }
 
-/// Every edge type has its own semantics and its own trap, so the example has to show
-/// all three. `requires` is the only one that blocks, `encompasses` is the only one
-/// that pays practice credit, and an agent that never sees them cannot write them.
+/// The example has to show all three edge types. `requires` is the only one that blocks.
+/// `encompasses` is the only one that pays practice credit. An agent that never sees
+/// them cannot write them.
 #[test]
 fn the_printed_schema_demonstrates_every_edge_type() {
     let (_, stdout, _) = benkyou(&["schema"]);
@@ -103,24 +98,23 @@ fn the_printed_schema_demonstrates_every_edge_type() {
             "no {ty:?} edge in the example graph"
         );
     }
-    // A node without goals produces a vaguer generation order, so the example must
-    // not model one.
+    // A node without goals produces a vaguer generation order, so the example must not
+    // model one.
     for n in &graph.nodes {
         assert!(!n.goals.is_empty(), "node `{}` has no goals", n.id);
     }
 }
 
-/// Direction is the one thing a worked example cannot get wrong: every agent copies
-/// its shape, and a reversed `requires` inverts the whole curriculum silently. Asserted
-/// through the graph's own traversals rather than by reading `from`/`to`, so this tracks
-/// what the scheduler actually believes.
+/// Every agent copies the example's shape, and a reversed `requires` inverts the
+/// curriculum silently. Asserted through the graph's own traversals, not by reading
+/// `from`/`to`, so this tracks what the scheduler believes.
 #[test]
 fn the_printed_schema_points_its_edges_the_way_the_engine_reads_them() {
     let (_, stdout, _) = benkyou(&["schema"]);
     let graph: Graph = serde_json::from_str(&stdout).expect("schema is a Graph");
 
     // `requires`: from is the prerequisite. Debugging a crashloop needs the lifecycle,
-    // so the lifecycle must come back as an ancestor of the debugging node.
+    // so the lifecycle comes back as an ancestor of the debugging node.
     assert!(
         graph
             .requires_ancestors("debug_crashloop")
@@ -146,8 +140,8 @@ fn the_printed_schema_points_its_edges_the_way_the_engine_reads_them() {
 }
 
 /// The documented use is `benkyou schema > goal.json && benkyou validate goal.json`.
-/// That path goes through goal resolution and the store's own loader, neither of which
-/// the in-process check above touches.
+/// That path goes through goal resolution and the store's loader. The in-process check
+/// above touches neither.
 #[test]
 fn the_printed_schema_validates_clean_through_the_store() {
     let dir = std::env::temp_dir().join("benkyou-cli-schema");
@@ -164,11 +158,11 @@ fn the_printed_schema_validates_clean_through_the_store() {
     assert_eq!(v["clean"], true, "validate reported repairs: {out}");
 }
 
-/// What `validate` says about a cycle has to match what it did to the file. The first
-/// version of this refusal printed "Nothing was cut" unconditionally, which is false the
-/// moment a cycle shares a graph with a sub-floor node: that node is dropped and the
-/// file rewritten on the same run. A blind-test agent read the line, believed re-running
-/// was free, and lost a node to it.
+/// What `validate` says about a cycle has to match what it did to the file.
+///
+/// The first refusal printed "Nothing was cut" unconditionally. That is false when a
+/// cycle shares a graph with a sub-floor node, which is dropped on the same run. A
+/// blind-test agent believed re-running was free and lost a node.
 #[test]
 fn a_refused_cycle_still_admits_the_repairs_it_made() {
     let dir = std::env::temp_dir().join("benkyou-cycle-honesty");
@@ -208,9 +202,9 @@ fn a_refused_cycle_still_admits_the_repairs_it_made() {
     assert!(!after.nodes.iter().any(|n| n.id == "junk"));
 }
 
-/// `needs_goals` is `Vec<usize>`, and an example that only ever prints `[]` cannot show
-/// that. The first agent to write a graph from this schema filled it with goal text and
-/// its file would not parse.
+/// `needs_goals` is `Vec<usize>`, and an example that only prints `[]` cannot show that.
+/// The first agent to write a graph from this schema filled it with goal text, and the
+/// file did not parse.
 #[test]
 fn the_printed_schema_shows_what_needs_goals_holds() {
     let (_, stdout, _) = benkyou(&["schema"]);
@@ -236,10 +230,9 @@ fn the_printed_schema_shows_what_needs_goals_holds() {
     }
 }
 
-/// `kind` says a node is a performance; `gradable` says a script can actually mark one.
-/// They come apart on exactly the nodes a study tool is most tempted to fake, so the
-/// worked example has to show a node where they disagree — a `skill` on the critical
-/// path that no `check.sh` will ever judge.
+/// `kind` says a node is a performance. `gradable` says a script can mark one. They come
+/// apart on the nodes a study tool is most tempted to fake. So the example shows a
+/// `skill` on the critical path that no `check.sh` can judge.
 #[test]
 fn the_printed_schema_shows_a_skill_no_grader_can_judge() {
     let (_, stdout, _) = benkyou(&["schema"]);
@@ -266,8 +259,8 @@ fn the_printed_schema_shows_a_skill_no_grader_can_judge() {
     assert_eq!(graph.nodes.len() - 1, graph.nodes.iter().filter(|x| x.gradable).count());
 }
 
-/// The refusal has to name the way forward. A dead end here is what sent one blind-test
-/// agent off to write a `check.sh` for a spoken monologue.
+/// The refusal has to name the way forward. A dead end here sent one blind-test agent
+/// off to write a `check.sh` for a spoken monologue.
 #[test]
 fn an_exercise_order_for_an_ungradable_node_points_at_practice() {
     let dir = std::env::temp_dir().join("benkyou-ungradable");
@@ -292,13 +285,11 @@ fn an_exercise_order_for_an_ungradable_node_points_at_practice() {
     );
 }
 
-/// The explicit refusal is only half the fix. With no `--node` the scheduler picks the
-/// target, and if it ignores `gradable` it hands back a node the very next step refuses.
+/// With no `--node` the scheduler picks the target. Ignoring `gradable` hands back a node
+/// the next step refuses.
 ///
-/// The observable difference is not the refusal — `exercise_order` refuses either way —
-/// it is whether the loop continues. `focus` breaks ties on node id ascending, so
-/// `aaa_ungradable` outranks `zzz_gradable` and an unfiltered scheduler stops on it
-/// while a gradable node is sitting right there.
+/// `focus` breaks ties on node id ascending, so `aaa_ungradable` outranks `zzz_gradable`
+/// and an unfiltered scheduler stops on it with a gradable node available.
 #[test]
 fn auto_selection_passes_over_an_ungradable_node_for_one_it_can_use() {
     let dir = std::env::temp_dir().join("benkyou-autoskip");
@@ -343,10 +334,11 @@ fn auto_selection_passes_over_an_ungradable_node_for_one_it_can_use() {
     );
 }
 
-/// When the only thing left to work on is a performance nobody can grade, the refusal
-/// has to say so. It used to print "nothing is practisable — every unlocked concept is
-/// at target", which reads as "you are finished" at exactly the moment a ramp ends on
-/// the call you still owe — and is false, since `session` still returns that node.
+/// When the only work left is a performance nobody can grade, the refusal has to say so.
+///
+/// It used to print "nothing is practisable - every unlocked concept is at target". That
+/// reads as "you are finished" when a ramp ends on the call you still owe. It is also
+/// false, because `session` still returns that node.
 #[test]
 fn the_bare_order_dead_end_names_the_node_and_the_way_out() {
     let dir = std::env::temp_dir().join("benkyou-deadend");
@@ -387,7 +379,7 @@ fn the_bare_order_dead_end_names_the_node_and_the_way_out() {
         "still claims the curriculum is finished: {stderr}"
     );
 
-    // The claim it must not make: `session` disagrees, and that is the whole bug.
+    // The claim it must not make: `session` disagrees, and that is the bug.
     let session = run(&["session", "d", "--size", "1"]);
     let body: serde_json::Value =
         serde_json::from_slice(&session.stdout).expect("session printed JSON");
@@ -397,9 +389,9 @@ fn the_bare_order_dead_end_names_the_node_and_the_way_out() {
     );
 }
 
-/// A score you assigned yourself is the weakest evidence the tool takes. For a node a
-/// grader could have judged, that is the self-preference problem the design is built to
-/// avoid — allowed, since a kata done on paper is a real attempt, but never silent.
+/// A score you assigned yourself is the weakest evidence the tool takes. On a node a
+/// grader can judge, that is the self-preference problem the design avoids. A kata done
+/// on paper is a real attempt, so it is allowed, but never silent.
 #[test]
 fn hand_scoring_something_a_grader_could_judge_is_flagged() {
     let dir = std::env::temp_dir().join("benkyou-selfscore");
@@ -438,8 +430,8 @@ fn hand_scoring_something_a_grader_could_judge_is_flagged() {
         flagged["warning"].as_str().unwrap_or("").contains("markable"),
         "hand-scoring a gradable node went unremarked: {flagged}"
     );
-    // Still recorded — the point is to mark it, not to block it. f32 through JSON, so
-    // compare with a tolerance rather than against the literal.
+    // Still recorded. The point is to mark it, not to block it. f32 through JSON, so
+    // compare with a tolerance.
     let scored = flagged["score"].as_f64().expect("a score");
     assert!((scored - 0.7).abs() < 1e-6, "score not recorded: {scored}");
 
@@ -449,10 +441,9 @@ fn hand_scoring_something_a_grader_could_judge_is_flagged() {
     );
 }
 
-/// The skill and the binary install from different URLs, so an agent has to be able to
-/// ask what it is actually holding. Pinned to the crate version rather than a literal so
-/// a release bump cannot leave this printing last release's number, and answered from
-/// any position for the same reason `--help` is.
+/// The skill and the binary install from different URLs, so an agent has to ask what it
+/// holds. Pinned to the crate version, so a release bump cannot leave this printing the
+/// last number. Answered from any position, for the same reason `--help` is.
 #[test]
 fn the_version_is_the_crate_version_from_any_position() {
     let expected = format!("benkyou {}", env!("CARGO_PKG_VERSION"));

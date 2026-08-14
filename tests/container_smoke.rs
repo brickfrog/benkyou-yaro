@@ -1,46 +1,37 @@
 //! What the container backend must guarantee.
 //!
-//! The same contract `run_smoke.rs` pins for the sandbox, asked of an engine instead:
-//! report the command faithfully, always terminate, and reach nothing the view did not
-//! name. It is a separate file because two of the mechanisms are genuinely different —
-//! the process cap is a cgroup rather than an rlimit, and the deadline kills a container
-//! rather than a process group — and because a shared harness would hide which backend a
-//! failure came from.
+//! The contract `run_smoke.rs` pins for the sandbox, asked of an engine. Separate file
+//! because the process cap is a cgroup, not an rlimit, and the deadline kills a
+//! container, not a process group.
 //!
-//! **On skipping.** These return early when there is no engine, or when the runner image
-//! has not been pulled. That is not the licence `run_smoke.rs` refuses to take:
-//! bubblewrap is a documented requirement for a Linux user, so a missing `bwrap` fails
-//! the suite exactly as it fails the tool. A container engine is optional on Linux and a
-//! multi-hundred-megabyte pull is not something `cargo test` should perform behind
-//! somebody's back. What is never skipped is the case that matters: an engine that *is*
-//! present with an image that *is* pulled runs every assertion below.
+//! On skipping. These tests return early when there is no engine, or when the runner
+//! image is not pulled. A multi-hundred-megabyte pull is not work `cargo test` performs
+//! on its own. `BENKYOU_REQUIRE_CONTAINER=1` turns every skip here into a failure, which
+//! is what CI sets. Without it this file can print `19 passed` having skipped nineteen.
 
 use std::path::PathBuf;
 
+use benkyou::deps::{self, Runtime};
+use benkyou::exercise::Deps;
 use benkyou::run::{Access, Backend, Job, Limits, Outcome, Want};
+
+/// Set to `1` to turn every skip below into a failure.
+///
+/// Matched against `1` alone: on any other value the variable reads as unset.
+const REQUIRE: &str = "BENKYOU_REQUIRE_CONTAINER";
 
 /// The backend under test, or `None` on a machine that cannot run it.
 ///
-/// The two situations wear the same error and only one of them is a skip, which is a
-/// distinction this file learned the hard way: an early version returned `None` on any
-/// failure, so breaking the policy on purpose — the way you check a test measures
-/// anything — made every assertion below quietly skip and report success.
-///
-/// So the prerequisites are asked for first, and they are the only licence to skip. Once
-/// an engine and a pulled image are known to be here, a backend that will not build is a
-/// failure and says so.
+/// Missing prerequisites are the only licence to skip: an earlier version returned `None`
+/// on any failure, so a broken policy skipped everything and passed.
 fn container() -> Option<Backend> {
     match benkyou::run::runner_status(None, false) {
-        Err(why) => {
-            eprintln!("skipping: {why}");
-            return None;
-        }
+        Err(why) => return absent(why),
         Ok(status) if status.image.is_none() => {
-            eprintln!(
-                "skipping: runner image not pulled: {} - run `benkyou runner --pull`",
+            return absent(format!(
+                "runner image not pulled: {} - run `benkyou runner --pull`",
                 status.reference
-            );
-            return None;
+            ));
         }
         Ok(_) => {}
     }
@@ -50,7 +41,18 @@ fn container() -> Option<Backend> {
     )
 }
 
-/// A run directory with a `work/` in it, which is what every real job has.
+/// A missing prerequisite: a skip, or a failure under the required mode.
+///
+/// "skipping" is printed on the skip path alone, so a `--nocapture` run can be grepped.
+fn absent(why: String) -> Option<Backend> {
+    if matches!(std::env::var(REQUIRE).as_deref(), Ok("1")) {
+        panic!("{why}\n  {REQUIRE}=1, so a missing prerequisite is a failure, not a skip");
+    }
+    eprintln!("skipping: {why}");
+    None
+}
+
+/// A run directory with a `work/` in it, like every job has.
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("benkyou-ctr-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -66,9 +68,7 @@ fn run(backend: &Backend, dir: &PathBuf, script: &str, secs: u32) -> Outcome {
         .expect("ran")
 }
 
-/// Every test below is `let Some(backend) = container() else { return };`, so this one
-/// exists to make the skip itself visible: it prints what a reader would otherwise have
-/// to infer from a suspiciously fast suite.
+/// Makes the skip visible. Every other test here returns early in silence.
 #[test]
 fn the_backend_is_selectable_by_name() {
     let Some(backend) = container() else { return };
@@ -84,8 +84,7 @@ fn the_backend_is_selectable_by_name() {
 // Reporting
 // ---------------------------------------------------------------------------
 
-/// An engine sits between this process and the script, and it must not launder the
-/// result: the exit code has to be the shell's, and the two streams have to stay apart.
+/// The engine must not launder the result: the shell's exit code, two separate streams.
 #[test]
 fn output_and_exit_code_survive_the_engine() {
     let Some(backend) = container() else { return };
@@ -102,9 +101,8 @@ fn output_and_exit_code_survive_the_engine() {
     assert_eq!(out.stderr.trim(), "to-stderr");
 }
 
-/// 127 is load-bearing: grading reads it as a broken exercise rather than a failing
-/// attempt, and an engine that reported its own failure code instead would turn every
-/// missing interpreter into a wrong answer.
+/// Grading reads 127 as a broken exercise, not a wrong answer. An engine that substitutes
+/// its own failure code breaks that.
 #[test]
 fn a_missing_command_still_reports_127() {
     let Some(backend) = container() else { return };
@@ -115,9 +113,7 @@ fn a_missing_command_still_reports_127() {
 
 /// Writes land on the host, in the directory the view named, owned by the caller.
 ///
-/// The ownership half is why `--user` is in the policy. A rootful daemon runs a
-/// container as root by default, so without it the learner's own workspace would fill
-/// with root-owned files that no later run could rewrite and no `rm` could clear.
+/// `--user` is why. A rootful daemon writes as root, leaving files no later run can clear.
 #[test]
 fn writes_reach_the_host_directory_as_the_caller() {
     let Some(backend) = container() else { return };
@@ -139,8 +135,7 @@ fn writes_reach_the_host_directory_as_the_caller() {
 // Containment
 // ---------------------------------------------------------------------------
 
-/// The property the whole boundary exists for, and the gate's `check/` versus its
-/// reference solution in miniature: a sibling the view did not name is not there.
+/// A sibling directory the view did not name is not there.
 #[test]
 fn a_directory_outside_the_view_does_not_exist() {
     let Some(backend) = container() else { return };
@@ -153,8 +148,7 @@ fn a_directory_outside_the_view_does_not_exist() {
     assert!(!out.stdout.contains("42"), "{out:?}");
 }
 
-/// A read-only entry is read-only. The gate hands `check/` over this way, so a grader
-/// cannot rewrite the tests it is being judged by.
+/// A read-only entry is read-only. The gate hands `check/` over this way.
 #[test]
 fn a_read_only_view_entry_cannot_be_written() {
     let Some(backend) = container() else { return };
@@ -176,14 +170,9 @@ fn a_read_only_view_entry_cannot_be_written() {
     assert_eq!(std::fs::read_to_string(dir.join("check/check.sh")).unwrap(), "original");
 }
 
-/// The gate's first direction, exactly as it is built: the reference solution runs with
-/// `work/` and `solution/` in view and `check/` left out, so a `solve.sh` cannot pass by
-/// reading the tests it is supposed to be independent of.
+/// The gate's first direction: `solution/` in view, `check/` left out.
 ///
-/// Spelled out rather than left to the generic view test, because this is the claim the
-/// whole gate rests on and it is the one an engine could quietly break: mount lists are
-/// assembled per job, so "the view is honoured" and "this particular view is honoured"
-/// are not the same assertion.
+/// Mount lists are assembled per job, so the generic view test does not cover this one.
 #[test]
 fn the_reference_run_cannot_see_the_hidden_checks() {
     let Some(backend) = container() else { return };
@@ -207,8 +196,7 @@ fn the_reference_run_cannot_see_the_hidden_checks() {
     assert!(!out.stdout.contains("EXPECTED"), "{out:?}");
 }
 
-/// The user's files are not reachable by absolute path either. The view is the whole
-/// filesystem the job has, not a working-directory convention.
+/// Absolute host paths do not work either. The view is the only filesystem the job has.
 #[test]
 fn the_host_filesystem_is_not_reachable() {
     let Some(backend) = container() else { return };
@@ -216,24 +204,20 @@ fn the_host_filesystem_is_not_reachable() {
     let witness = dir.join("witness");
     std::fs::write(&witness, "do not read me").unwrap();
 
-    // Its own run directory, by absolute host path — the most likely accident.
+    // Its own run directory, by absolute host path. The most likely accident.
     let out = run(&backend, &dir, &format!("cat {}", witness.display()), 60);
     assert!(!out.succeeded(), "{out:?}");
     assert!(!out.stdout.contains("do not read me"), "{out:?}");
 
-    // And a real home directory, the thing a bad `rm` or a curious script goes for.
+    // And a home directory, what a bad `rm` goes for.
     let out = run(&backend, &dir, "ls /home && ls /root", 60);
     assert!(!out.succeeded(), "enumerated real home directories: {out:?}");
 }
 
-/// No network. `--network none` is the whole of it, and it is the guarantee the
-/// dependency mechanism is built on: a grader that could fetch would make `warm`
-/// pointless and every verdict a property of the afternoon it was earned.
+/// No network, from `--network none`. A grader that can fetch makes `warm` pointless.
 ///
-/// The probe is Python and not `/dev/tcp`, which is what this test used first and is a
-/// *bash* feature: the image's `/bin/sh` is dash, so the redirection failed on syntax and
-/// the test passed with `--network none` removed. It now says which mechanism it used, so
-/// a probe that stops running cannot read as a probe that found nothing.
+/// The probe is Python. `/dev/tcp` is bash-only and the image's `/bin/sh` is dash, so the
+/// first version failed on syntax and passed with `--network none` removed.
 #[test]
 fn there_is_no_network() {
     let Some(backend) = container() else { return };
@@ -250,9 +234,8 @@ fn there_is_no_network() {
     assert!(!out.stdout.contains("RESOLVED"), "dns resolved inside a network-less job: {out:?}");
 }
 
-/// `HOME` is real and writable and is not the user's. A `getpwuid` that fails breaks
-/// Python's `expanduser` and much else, which is why the synthetic passwd is mounted:
-/// this asserts the interpreter agrees with the environment variable.
+/// `HOME` is writable and is not the user's. The synthetic passwd is mounted so
+/// `getpwuid` works, which `expanduser` needs.
 #[test]
 fn home_is_writable_and_the_interpreter_agrees() {
     let Some(backend) = container() else { return };
@@ -267,11 +250,7 @@ fn home_is_writable_and_the_interpreter_agrees() {
     assert!(!out.stdout.contains("/home/"), "HOME was a real home: {out:?}");
 }
 
-/// The caller's environment does not reach the job.
-///
-/// What the allowlist cannot govern here is the image's own `ENV`, and that is stated
-/// rather than asserted away: `PYTHON_VERSION` arrives because the image exports it, and
-/// the image is the one thing a container verdict records exactly.
+/// The caller's environment does not reach the job. The image's own `ENV` still does.
 #[test]
 fn the_callers_environment_does_not_leak() {
     let Some(backend) = container() else { return };
@@ -289,9 +268,8 @@ fn the_callers_environment_does_not_leak() {
     assert!(out.stdout.contains("[UTC]"), "the allowlist did not arrive: {out:?}");
 }
 
-/// The point of the backend, and the reason a verdict records an image: the runtime is
-/// the image's, not the machine's. If these two ever matched by accident the test would
-/// be vacuous, so it asserts the image's own version rather than merely "different".
+/// The runtime is the image's, not the machine's. Asserts the image's version, because
+/// "different" passes when the two match by accident.
 #[test]
 fn the_interpreter_is_the_images() {
     let Some(backend) = container() else { return };
@@ -323,13 +301,10 @@ fn a_hanging_command_hits_the_deadline() {
     assert!(out.elapsed_secs < 60.0, "took {}s", out.elapsed_secs);
 }
 
-/// The regression this backend could have shipped.
+/// The deadline must kill the container, not the engine's client.
 ///
-/// Killing the process group kills the engine's *client*; the daemon owns the container
-/// and never notices. A survivor would keep writing into the learner's workspace long
-/// after a verdict was reported — and under `serve`, keep doing it while the next
-/// exercise ran. The witness file is checked for growth *after* the deadline, because
-/// "the client exited" and "the job stopped" are exactly the two things this conflates.
+/// A survivor keeps writing into the learner's workspace after the verdict, so the
+/// witness file is checked for growth after the deadline.
 #[test]
 fn the_deadline_kills_the_container_and_not_just_the_client() {
     let Some(backend) = container() else { return };
@@ -350,8 +325,7 @@ fn the_deadline_kills_the_container_and_not_just_the_client() {
     assert_eq!(before, after, "the container outlived the deadline and kept writing");
 }
 
-/// An output bomb is reported as an output bomb, not as a hang, with an engine in the
-/// middle of the pipe.
+/// An output bomb is reported as truncation, not as a hang.
 #[test]
 fn runaway_output_is_truncated_not_hung() {
     let Some(backend) = container() else { return };
@@ -366,9 +340,7 @@ fn runaway_output_is_truncated_not_hung() {
     assert!(out.stdout.len() <= 64 * 1024, "kept {} bytes", out.stdout.len());
 }
 
-/// `/tmp` is a bounded tmpfs, so a runaway write fills a ceiling rather than the user's
-/// disk. The engine gets this from `--tmpfs`, where the sandbox gets it from `--size`;
-/// the number is shared so the two agree.
+/// `/tmp` is a bounded tmpfs, so a runaway write fills a ceiling, not the user's disk.
 #[test]
 fn the_scratch_filesystem_is_bounded() {
     let Some(backend) = container() else { return };
@@ -383,19 +355,11 @@ fn the_scratch_filesystem_is_bounded() {
     assert!(mb > 0 && mb < 512, "wrote {mb} MiB into a 256 MiB tmpfs: {out:?}");
 }
 
-/// The process cap is the container's, and it has to actually bite.
+/// The process cap is `--pids-limit`, not `ulimit -u`, because a container shares the
+/// host's uid and `RLIMIT_NPROC` counts the whole login session.
 ///
-/// `ulimit -u` is deliberately not applied under this backend: a container shares the
-/// host's uid, so `RLIMIT_NPROC` would count the whole logged-in session exactly as it
-/// does on the host — set below it nothing forks at all. `--pids-limit` counts the
-/// container instead.
-///
-/// The assertion is a count, and that is the second version of this test. The first ran
-/// a fork bomb and looked for `Cannot fork` in the output, which passes with the cap
-/// *removed*: a bomb hits the host's own ceiling and reports the same words, so the test
-/// was measuring Linux rather than this policy. Asking for a specific number of
-/// concurrent processes discriminates — 64 of them arrive when nothing caps them and
-/// cannot when the cap is 16.
+/// Counts processes instead of grepping for `Cannot fork`. That grep passed with the cap
+/// removed, because a fork bomb hits the host ceiling and prints the same words.
 #[test]
 fn the_process_cap_is_the_containers_own() {
     let Some(backend) = container() else { return };
@@ -421,24 +385,26 @@ fn the_process_cap_is_the_containers_own() {
 
 /// A container whose owner is gone is killed by the next detection.
 ///
-/// This is the hole `--die-with-parent` fills for the sandbox and nothing fills for an
-/// engine: kill this process outright and the daemon keeps running the job it was
-/// watching, against the learner's workspace, forever. The label is the only thing that
-/// makes the leftovers identifiable, so the test fakes one with an owner pid that cannot
-/// exist and checks that building a backend collects it.
+/// `--die-with-parent` covers this for the sandbox. Nothing covers it for an engine, so
+/// the owner label plus a reap on detection is the only mechanism.
 #[test]
 fn a_container_whose_owner_died_is_reaped() {
-    let Some(_) = container() else { return };
+    let Some(backend) = container() else { return };
+    // The engine detection chose, at the path it chose. Hard-coded `docker` staged the
+    // orphan under an engine that was not the one asked to reap it.
+    let Backend::Container { cli, image, .. } = &backend else {
+        panic!("container() hands back a container backend, not {}", backend.name())
+    };
 
-    // Above `pid_max` on any Linux this runs on, so it names no process and cannot be
-    // reused by one between the two halves of this test.
+    // Above `pid_max`, so it names no process and cannot be reused mid-test.
     let orphan_owner = "4194303";
     let name = format!("benkyou-orphan-test-{}", std::process::id());
-    let started = std::process::Command::new("docker")
+    let started = std::process::Command::new(cli)
         .args(["run", "-d", "--rm", "--network", "none"])
         .args(["--label", &format!("benkyou.owner={orphan_owner}")])
         .args(["--name", &name, "--entrypoint", "/bin/sh"])
-        .arg(benkyou::run::DEFAULT_IMAGE)
+        // By id, as a real job is launched: no engine has to re-resolve the reference.
+        .arg(&image.id)
         .args(["-c", "sleep 300"])
         .output()
         .expect("start a fake orphan");
@@ -449,10 +415,10 @@ fn a_container_whose_owner_died_is_reaped() {
     );
 
     let running = |name: &str| {
-        let out = std::process::Command::new("docker")
+        let out = std::process::Command::new(cli)
             .args(["ps", "--filter", &format!("name={name}"), "--format", "{{.Names}}"])
             .output()
-            .expect("docker ps");
+            .expect("ask the engine what is running");
         String::from_utf8_lossy(&out.stdout).contains(name)
     };
     assert!(running(&name), "the staged orphan is not running, so this proves nothing");
@@ -463,13 +429,12 @@ fn a_container_whose_owner_died_is_reaped() {
 
     let survived = running(&name);
     if survived {
-        let _ = std::process::Command::new("docker").args(["kill", &name]).output();
+        let _ = std::process::Command::new(cli).args(["kill", &name]).output();
     }
     assert!(!survived, "a container whose owner is gone outlived the next detection");
 }
 
-/// A job that names a directory the caller never created is the caller's bug, and it is
-/// reported as that rather than as a mount failure from inside the engine.
+/// A view naming a directory the caller never created is refused, not left to the engine.
 #[test]
 fn a_view_naming_a_missing_directory_is_refused() {
     let Some(backend) = container() else { return };
@@ -484,4 +449,84 @@ fn a_view_naming_a_missing_directory_is_refused() {
         ))
         .expect_err("must refuse");
     assert!(err.contains("nope"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// Dependencies
+// ---------------------------------------------------------------------------
+
+/// The `warm --container` path, from the image's own ABI to an import with no network.
+///
+/// The only test in this file that uses a network: it needs a package index the first
+/// time it runs. Under `BENKYOU_REQUIRE_CONTAINER=1` it fails instead of skipping.
+#[test]
+fn a_warmed_set_is_the_images_own_and_mounts_read_only() {
+    let Some(backend) = container() else { return };
+    let Backend::Container { image, .. } = &backend else {
+        panic!("container() hands back a container backend, not {}", backend.name())
+    };
+    // Small, pure Python, no dependencies of its own.
+    let declared = Deps { python: vec!["idna==3.10".to_string()] };
+
+    let warmed = deps::warm(&declared, false, Runtime::of(&backend))
+        .expect("warm into the image's runtime")
+        .expect("a declaration naming a package warms a set");
+    // Keyed by the image, not by the host's ABI tag. Containment rather than equality:
+    // the key's shape is the cache's business.
+    let hex = image.id.trim_start_matches("sha256:");
+    assert!(
+        warmed.runtime.contains(&hex[..12]) && warmed.runtime.contains(&image.arch),
+        "a set for an image must be keyed by that image: {} does not name {} {}",
+        warmed.runtime,
+        image.id,
+        image.arch
+    );
+    assert!(warmed.path.is_dir(), "the host owns the set: {}", warmed.path.display());
+    assert!(
+        warmed.resolved.iter().any(|d| d == "idna==3.10"),
+        "the manifest must name what landed on disk: {:?}",
+        warmed.resolved
+    );
+
+    // Under the real policy, `--network none` included: a set that only worked while an
+    // index was reachable passes here and fails every gate.
+    let dir = scratch("deps");
+    let out = backend
+        .run(
+            &Job::new(
+                &dir,
+                WORK,
+                "work",
+                "python3 -c 'import idna; print(idna.encode(\"benkyou.example\"))'",
+                120,
+            )
+            .with_deps(Some(&warmed.path)),
+        )
+        .expect("ran");
+    assert!(out.succeeded(), "the warmed set is not importable: {out:?}");
+    // `encode` returns bytes, so the `b''` is what proves the package's own function ran.
+    assert_eq!(out.stdout.trim(), "b'benkyou.example'", "{out:?}");
+
+    // `mounted` is asserted first: a write that fails on an absent mount is the same red.
+    let probe = format!(
+        "test -d {d} && echo mounted; echo tampered > {d}/tampered",
+        d = deps::GUEST_DEPS
+    );
+    let out = backend
+        .run(&Job::new(&dir, WORK, "work", &probe, 60).with_deps(Some(&warmed.path)))
+        .expect("ran");
+    assert!(out.stdout.contains("mounted"), "the set was not mounted at all: {out:?}");
+    assert!(!out.succeeded(), "a job wrote into the shared dependency set: {out:?}");
+    assert!(
+        !warmed.path.join("tampered").exists(),
+        "a write reached the host's cache: {}",
+        warmed.path.display()
+    );
+
+    // Already present, so nothing is fetched and nothing reaches a network.
+    let again = deps::warm(&declared, false, Runtime::of(&backend))
+        .expect("warm a set that is already present")
+        .expect("the same declaration warms the same set");
+    assert!(!again.fetched, "the second warm refetched a set already on disk: {again:?}");
+    assert_eq!(again.path, warmed.path, "and it is the same set");
 }

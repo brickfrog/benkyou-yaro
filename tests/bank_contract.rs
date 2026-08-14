@@ -1,5 +1,5 @@
-//! The bank is content-addressed, so the load-bearing property is that the key
-//! describes the contents. Everything else here follows from that.
+//! The bank is content-addressed. The load-bearing property is that the key describes
+//! the contents. Everything else here follows from that.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,8 +14,8 @@ fn scratch(name: &str) -> PathBuf {
     d
 }
 
-/// Point the bank at a private directory. Passed explicitly rather than through
-/// `XDG_DATA_HOME`, so these run in parallel with each other and with everything else.
+/// Point the bank at a private directory. Passed as an argument and not through
+/// `XDG_DATA_HOME`, so these tests run in parallel with everything else.
 fn with_bank<T>(name: &str, body: impl FnOnce(&Path) -> T) -> T {
     let bank = scratch(name);
     let out = body(&bank);
@@ -76,9 +76,8 @@ fn attestation() -> Attestation {
     }
 }
 
-/// The whole promise: what comes out of the bank hashes to the name it was filed
-/// under. Anything else and a "reuse this exact exercise" feature is reusing whatever
-/// happens to be sitting at that path.
+/// The promise: what comes out of the bank hashes to the name it was filed under.
+/// Otherwise "reuse this exact exercise" reuses whatever sits at that path.
 #[test]
 fn a_banked_bundle_hashes_to_its_own_key() {
     with_bank("roundtrip", |bank| {
@@ -94,9 +93,8 @@ fn a_banked_bundle_hashes_to_its_own_key() {
             "the bundle does not hash to the directory it lives in"
         );
 
-        // The authored files, and only those. A `.gate.json` swept in here would be
-        // one machine's verdict travelling as though it were part of the exercise,
-        // and `attempt` trusts that file.
+        // The authored files, and only those. A `.gate.json` swept in here travels as
+        // one machine's verdict, and `attempt` trusts that file.
         assert!(banked.join("task.toml").is_file());
         assert!(banked.join("solution/solve.sh").is_file());
         assert!(!banked.join(".gate.json").exists());
@@ -127,8 +125,8 @@ fn an_exercise_edited_after_gating_is_refused() {
     });
 }
 
-/// Re-gating the same exercise is the event worth recording, and the old report is
-/// the thing that makes it worth recording. Attestations accumulate.
+/// Re-gating is the event worth recording, and the earlier report is why. Attestations
+/// accumulate.
 #[test]
 fn re_gating_appends_an_attestation_and_keeps_the_bundle() {
     with_bank("attest", |bank| {
@@ -156,8 +154,8 @@ fn re_gating_appends_an_attestation_and_keeps_the_bundle() {
     });
 }
 
-/// Nobody retypes 64 hex characters, and silently picking one of several matches
-/// would hand back a different exercise than the one asked for.
+/// Nobody retypes 64 hex characters. Silently picking one of several matches hands back
+/// a different exercise than the one asked for.
 #[test]
 fn a_prefix_resolves_only_when_it_is_unambiguous() {
     with_bank("prefix", |bank| {

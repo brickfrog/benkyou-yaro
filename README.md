@@ -171,9 +171,9 @@ come from the same generation, so get them as a pair.
 Pinned to a release:
 
 ```sh
-cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.4.0
+cargo install --git https://github.com/brickfrog/benkyou-yaro --tag v0.5.0
 mkdir -p ~/.claude/skills/benkyou
-curl -sfL https://raw.githubusercontent.com/brickfrog/benkyou-yaro/v0.4.0/skill/SKILL.md \
+curl -sfL https://raw.githubusercontent.com/brickfrog/benkyou-yaro/v0.5.0/skill/SKILL.md \
   -o ~/.claude/skills/benkyou/SKILL.md
 ```
 
@@ -353,19 +353,22 @@ There is no database, no daemon, and no sync. You can delete any of it.
 ## Releasing
 
 The skill and the binary are one unit that ships from two URLs. A release keeps the two
-pointed at each other. Three files carry the version. Move all three together.
+pointed at each other. Four files carry the version. Move all four together.
 
 1. `Cargo.toml` — raise `version`.
-2. `skill/SKILL.md` — the `--tag vX.Y.Z` line in the bootstrap, and the
+2. `Cargo.lock` — the `benkyou` package entry's `version`, which mirrors the manifest.
+   A build rewrites it anyway, so a lock left behind is either a dirty tree at tag time
+   or an unexplained one-line diff on the next branch that builds.
+3. `skill/SKILL.md` — the `--tag vX.Y.Z` line in the bootstrap, and the
    `documents benkyou X.Y.x` comment beside it. Those two are the only version literals
    in the skill, and the prose around them must stay version-free: a third copy is a
    third thing to update, and the copy that goes stale tells an agent to reject the
    binary it was shipped with.
-3. `README.md` — the `--tag` line and the raw URL in the pinned install.
-4. Run `cargo test`.
-5. Commit the change.
-6. Run `git tag -a vX.Y.Z`.
-7. Push the branch and the tag.
+4. `README.md` — the `--tag` line and the raw URL in the pinned install.
+5. Run `cargo test`.
+6. Commit the change.
+7. Run `git tag -a vX.Y.Z`.
+8. Push the branch and the tag.
 
 Raise the minor number after a change to a command, a flag, or an output field. That is
 the contract that the skill describes. A patch is for a change that needs no new wording

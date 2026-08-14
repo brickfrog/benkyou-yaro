@@ -1,10 +1,10 @@
 //! Adversarial tests for the assessment loop, written independently of the
 //! implementation.
 //!
-//! Two invariants carry the whole loop: after any `record`, `known` and `unknown` are
-//! disjoint, and `known` is downward-closed under `requires`. If either breaks, the
-//! closure that makes a 20-question interview cover a 200-node graph stops being
-//! sound, and the plan silently contains things the learner cannot start.
+//! Two invariants carry the loop. After any `record`, `known` and `unknown` are disjoint,
+//! and `known` is downward-closed under `requires`. If either breaks, the closure that
+//! lets a 20-question interview cover a 200-node graph stops being sound. The plan then
+//! contains things the learner cannot start.
 
 use std::collections::BTreeSet;
 
@@ -85,9 +85,9 @@ fn a_fail_near_the_root_collapses_the_descendant_cone() {
     check_invariants(&g, &s, "after fail on a");
 }
 
-/// The defect the audit found: `Partial` must leave the node itself out of `known`,
-/// including when a previous verdict had already put it there. Leaving it resolved
-/// both contradicts the documented semantics and can break downward-closure.
+/// `Partial` must leave the node out of `known`, including when an earlier verdict put
+/// it there. Leaving it resolved contradicts the documented semantics and can break
+/// downward-closure.
 #[test]
 fn a_partial_verdict_unresolves_a_previously_known_node() {
     let g = chain();
@@ -127,8 +127,8 @@ fn invariants_survive_an_arbitrary_verdict_sequence() {
     }
 }
 
-/// Selection must prefer the node whose answer collapses the most, which on a chain
-/// is never an endpoint — that is the entire reason the loop is cheap.
+/// Selection must prefer the node whose answer collapses the most. On a chain that is
+/// never an endpoint, which is why the loop is cheap.
 #[test]
 fn selection_prefers_high_leverage_nodes() {
     let g = chain();

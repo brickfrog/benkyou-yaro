@@ -1,9 +1,9 @@
 //! Adversarial tests for the scheduler, written independently of the implementation.
 //!
-//! The load-bearing property here is the `encompasses` bridge: one exercise granting
-//! credit to the concepts inside it is what stops the procedural track from being a
-//! parallel chore competing with the card queue. Getting its direction backwards
-//! typechecks and quietly makes the whole feature useless, so it is asserted directly.
+//! The load-bearing property is the `encompasses` bridge. One exercise granting credit
+//! to the concepts inside it stops the procedural track from competing with the card
+//! queue. A reversed direction typechecks and makes the feature useless, so the tests
+//! assert it directly.
 
 use benkyou::graph::*;
 use benkyou::sched::*;
@@ -44,7 +44,7 @@ fn graph(nodes: &[&str], edges: Vec<Edge>) -> Graph {
     }
 }
 
-/// Mastery of the harder node credits the easier node inside it — not the reverse.
+/// Mastery of the harder node credits the easier node inside it, not the reverse.
 /// `Edge { from: easy, to: hard, Encompasses }`, so attempting `hard` credits `easy`.
 #[test]
 fn encompass_credit_flows_from_harder_to_easier() {
@@ -102,7 +102,7 @@ fn encompassed_nodes_are_not_credited_with_an_attempt() {
     assert_eq!(f["easy"].attempts, 0, "credit is not an attempt");
 }
 
-/// Encompassing may be circular in generated data. Credit must terminate and land once.
+/// Encompassing can be circular in generated data. Credit must terminate and land once.
 #[test]
 fn an_encompass_cycle_terminates_and_credits_once() {
     let g = graph(
@@ -121,9 +121,9 @@ fn an_encompass_cycle_terminates_and_credits_once() {
     assert_eq!(f["b"].mastery, 0.5);
 }
 
-/// Time makes a prerequisite *due*, never unproven. Gating on a decaying value meant
-/// one perfect pass landed exactly on target and fell under it the next day, closing
-/// every dependent overnight; the learner had not forgotten anything in 24 hours.
+/// Time makes a prerequisite due, never unproven. Gating on a decaying value meant one
+/// perfect pass landed on target and fell under it the next day, closing every dependent
+/// overnight. The learner had forgotten nothing in 24 hours.
 #[test]
 fn a_stale_prerequisite_stays_unlocked_and_becomes_due() {
     let g = graph(&["base", "dep"], vec![edge("base", "dep", EdgeType::Requires)]);
@@ -240,8 +240,8 @@ fn a_session_interleaves_across_concepts() {
     }
 }
 
-/// With a single practisable concept there is nothing to interleave with, so the
-/// round-robin degenerates rather than returning a short session.
+/// With one practisable concept there is nothing to interleave with, so the round-robin
+/// degenerates instead of returning a short session.
 #[test]
 fn a_single_concept_session_repeats_it() {
     let g = graph(&["only"], vec![]);
@@ -250,8 +250,8 @@ fn a_single_concept_session_repeats_it() {
     assert_eq!(session, vec!["only".to_string(); 3]);
 }
 
-/// Nothing the scheduler does may produce a non-finite confidence, whatever the
-/// generated data looks like.
+/// Nothing the scheduler does can produce a non-finite confidence, whatever the generated
+/// data looks like.
 #[test]
 fn mastery_never_becomes_non_finite() {
     let g = graph(

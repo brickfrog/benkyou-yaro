@@ -624,6 +624,21 @@ directory, a script, a deadline — and hands it over. Every execution in the to
 this way: both gate directions, the advisory `run_cmd`, `grade`, and the browser's Run
 and Submit.
 
+The view is checked before any backend starts. Each entry must be plain path components
+inside the run directory. An absolute name is refused. A name holding `..` is refused. An
+entry that is a symlink is refused rather than followed, because a link can point at
+another entry: a writable `work` aimed at the gate's `check` hands out a writable mount
+of the directory the gate mounted read-only. Every caller passes a literal like `work`,
+which is the point. The view is the statement of what a job can reach, so its width must
+not depend on the shape of a name.
+
+One host path cannot be mounted into a container: one that holds a comma. `--mount` takes
+comma-separated `key=value` pairs and has no escape, and quoting the field does not work
+either. The refusal names the path. Two paths reach a mount, and each moves a different
+way: the run directory through `--scratch`, and the dependency cache through
+`XDG_CACHE_HOME`. Switching to `-v`, whose separator is a colon, moves the problem to a
+different set of paths.
+
 **Sandbox** is the default: a user, mount, PID, IPC, UTS and network namespace via
 `bubblewrap`, a read-only `/usr`, a synthetic one-line `/etc/passwd`, a bounded tmpfs
 for `/tmp`, a throwaway `$HOME`, an environment allowlist, and resource ceilings. The
@@ -639,9 +654,31 @@ bounded `/tmp`, and the same synthetic `/etc/passwd`. `--user` is the caller's o
 without which a rootful daemon fills the learner's workspace with root-owned files.
 
 Selection is ordered, not negotiated: sandbox where there is one, container where there
-is not, and `--container` to ask for it anyway on a machine with both — which is how a
-Linux author gates against the runtime a mac will use. `--unsafe-host` remains the only
-thing that turns isolation off, and remains reachable only by that name.
+is not, and `--container` to ask for it anyway on a machine with both. That last one is
+how a Linux author gates against the runtime a mac will use. `--unsafe-host` remains the
+only thing that turns isolation off, and remains reachable only by that name.
+
+An engine counts as present when it works, not when its binary is on `$PATH`. A mac with
+a Docker CLI and no Docker Desktop has the binary and no daemon. So each candidate is
+asked for `info`, in order, and the first that answers is the one. Every candidate that
+fails is reported, because "docker is installed but not running, and podman is not
+installed" is the sentence a reader can act on.
+
+`info` is the question rather than `--version`, which the client answers alone, or
+`version --format {{.Server.Version}}`, which looks stricter and rejects a working
+podman. Podman is daemonless and its `.Server` field describes a remote podman.
+
+Every engine command this tool runs has a deadline: 20 seconds for control commands, 15
+minutes for a pull. A dead context does not fail, it waits, and so does
+`Command::output`. One reviewer's `benkyou runner --pull` hung until their tool timeout
+killed it. The deadline on the kill path matters most, because that path exists to stop
+something else from hanging.
+
+An absent image is recognized, never inferred. `image inspect` failing means the image is
+missing only when the engine says so in words it owns, such as `No such image` or `image
+not known`. Every other failure is an error naming the engine. The earlier code treated
+any failure as absence, and a test suite then skipped nineteen container assertions on a
+machine with a dead daemon and reported success.
 
 **UnsafeHost** is the escape hatch, reachable only by passing `--unsafe-host`. It runs
 as the user, with the user's rights, over the whole filesystem. There is no prompt:
@@ -682,7 +719,10 @@ What a container does not inherit is `--die-with-parent`. Killing the engine's c
 leaves the container running, because the daemon owns it and never noticed the client
 leave — so the deadline stops the container by name first and reaps the process group
 afterwards, and every run carries a label naming the pid that owns it so the next
-detection can kill the ones whose owner is gone.
+detection can kill the ones whose owner is gone. That label is a hint and not a
+credential: `benkyou.owner=<pid>` is a string anything with an engine socket can set, and
+a recycled pid makes a dead owner look alive, so the sweep is tidying up after a crash
+and not a boundary that keeps anybody out.
 
 `RLIMIT_NPROC` does not travel either. A container shares the host's uid, so `ulimit -u`
 would count the whole logged-in session exactly as it does on the host: the cap is
@@ -728,6 +768,14 @@ nothing forks, set above it a fork bomb still has headroom. It is applied under 
 sandbox and nowhere else. The container backend caps the container instead, with
 `--pids-limit`, which is the same guarantee arrived at through a cgroup rather than an
 rlimit; the host backend has no equivalent and says so.
+
+Disk is capped per file and not in aggregate. A writable workspace bind mount *is* the
+host's filesystem, so `Limits::file_size_kb` — `RLIMIT_FSIZE` — bounds any single file the
+job creates and nothing bounds how many it creates: a script writing a million small files
+fills the host disk under either isolating backend. The bounded `/tmp` tmpfs is a separate
+mount and covers none of that. An aggregate cap is a property of a filesystem rather than
+of a process, so there is nothing to set here short of giving each run a loopback
+filesystem of its own, and that is not paid for by the failure it would prevent.
 
 The wall-clock deadline predates all of this and still matters most. An infinite loop in
 a draft solution is an ordinary mistake and the gate has to report it as one rather than
@@ -837,6 +885,13 @@ which is precisely what the rest of this tool refuses to do with a digest. `==` 
 required and a range is rejected — including `==1.0,!=1.0.1`, since one exact comparator
 among several still admits whatever the index decides `1.0` means today.
 
+**One writer per key.** Exact pins at the top do not pin what those packages require, so
+two warms of one key can install different trees and the winner of a race decides the
+contents. A lock directory per key removes that. A leftover lock is reported and never
+stolen: two waiters can both judge one lock dead, and the slow holder then removes the
+new owner's lock. Publication still moves an occupied destination aside before renaming
+the replacement in, so a reader in that two-rename window reports a set as unwarmed.
+
 **Registry names only, and only wheels.** Warming runs on the user's machine with the
 user's rights, and its argument list comes out of a *generated* file. `git+https://…`
 clones and builds, `./thing` and `-e .` build from a path, a leading `-` is a flag rather
@@ -858,6 +913,11 @@ it describes the environment a verdict was earned in, not the exercise.
 system-installed package still come from the machine, and a grader's result is only as
 reproducible as that machine. Declared dependencies narrow this — the packages an
 exercise names are pinned and recorded — but they sit on top of a host interpreter.
+
+**Byte-identical dependencies.** A warmed set records the names and versions it installed,
+and those are what a later run checks. Two warms of the same exact-pinned list can install
+different bytes if an index republishes a file under a version it already served: the pins
+are the identity, and no wheel hash is recorded to notice.
 
 What isolation does buy is *isolation*: no network, no host filesystem, a scrubbed
 `HOME`, a private tmpfs, and a fresh workspace per run, so nothing a run leaves behind

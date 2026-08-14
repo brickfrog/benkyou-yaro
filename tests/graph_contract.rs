@@ -1,8 +1,7 @@
 //! Adversarial contract tests, written independently of the implementation.
 //!
-//! These target the specific failure modes that showed up across competing
-//! implementations: ghost node ids leaking into a plan, and a budget-skipped
-//! prerequisite leaving its dependent scheduled.
+//! These target two failure modes seen across competing implementations. Ghost node ids
+//! leaked into a plan, and a budget-skipped prerequisite left its dependent scheduled.
 
 use std::collections::BTreeSet;
 
@@ -53,8 +52,8 @@ fn ids(v: &[NodeId]) -> Vec<&str> {
     v.iter().map(|s| s.as_str()).collect()
 }
 
-/// An edge may name a node that does not exist. Such an id must never become a
-/// plan entry: a study order made of nodes you cannot study is not a study order.
+/// An edge can name a node that does not exist. That id must never become a plan entry.
+/// A study order made of nodes you cannot study is not a study order.
 #[test]
 fn plan_never_contains_a_nonexistent_node() {
     let g = graph(vec![node("b", 10)], vec![req("ghost", "b", 1.0)]);
@@ -66,8 +65,8 @@ fn plan_never_contains_a_nonexistent_node() {
     assert_eq!(ids(&plan), vec!["b"]);
 }
 
-/// The corrected budget rule: an unaffordable prerequisite takes its dependents
-/// down with it, even when a dependent would have fit on its own.
+/// An unaffordable prerequisite takes its dependents down with it, even when a dependent
+/// fits on its own.
 #[test]
 fn budget_skipped_prerequisite_blocks_its_dependent() {
     // expensive -> cheap_dependent, and an independent cheap node.
@@ -166,10 +165,9 @@ fn plan_is_prerequisite_closed_and_ordered() {
     }
 }
 
-/// A cycle is a modelling error the author has to resolve. The tool reports it whole
-/// and changes nothing: it cannot tell which of the three edges is the wrong one, and
-/// the confidence it used to sort by is written by whoever wrote the edge, so the
-/// boldest mistake always won.
+/// A cycle is a modelling error the author has to resolve. The tool reports it whole and
+/// changes nothing. It cannot tell which of the three edges is wrong. The confidence it
+/// once sorted by is written by whoever wrote the edge, so the boldest mistake won.
 #[test]
 fn validate_reports_a_cycle_without_cutting_any_edge() {
     let mut g = graph(
@@ -192,7 +190,7 @@ fn validate_reports_a_cycle_without_cutting_any_edge() {
     assert_eq!(g.validate(RELEVANCE_FLOOR, NODE_CAP).cycles.len(), 1);
 }
 
-/// Validation must be idempotent: a repaired graph repairs to itself.
+/// Validation is idempotent. A repaired graph repairs to itself.
 #[test]
 fn validate_is_idempotent_and_deterministic() {
     let build = || {
@@ -214,8 +212,8 @@ fn validate_is_idempotent_and_deterministic() {
         )
     };
 
-    // NaN != NaN, so whole-struct equality is useless here. Compare the shape:
-    // which nodes survived, and which edges, in order.
+    // NaN != NaN, so whole-struct equality is useless here. Compare the shape: which
+    // nodes survived, and which edges, in order.
     let shape = |g: &Graph| {
         (
             g.nodes.iter().map(|n| n.id.clone()).collect::<Vec<_>>(),
@@ -231,8 +229,8 @@ fn validate_is_idempotent_and_deterministic() {
 
     let mut again = first.clone();
     let r2 = again.validate(RELEVANCE_FLOOR, NODE_CAP);
-    // Every mechanical repair is settled after one run. The cycle is not a repair, so
-    // it is still reported — identically — until the author removes an edge.
+    // Every mechanical repair is settled after one run. The cycle is not a repair, so it
+    // is still reported until the author removes an edge.
     assert!(r2.duplicate_nodes.is_empty());
     assert!(r2.dropped_irrelevant.is_empty());
     assert!(r2.dropped_over_cap.is_empty());
@@ -251,13 +249,12 @@ fn validate_is_idempotent_and_deterministic() {
     // The self-loop and the edge naming a missing node are both dangling material.
     assert!(r1.dangling_edges.iter().any(|e| e.from == "a" && e.to == "a"));
     assert!(r1.dangling_edges.iter().any(|e| e.from == "missing"));
-    // A NaN relevance is not below the floor, so the node survives rather than
-    // being silently dropped.
+    // A NaN relevance is not below the floor, so the node survives.
     assert!(first.contains("nan"));
 }
 
-/// The closure is the whole pruning mechanism: one PASS deep in the graph must
-/// collapse the entire ancestor cone.
+/// The closure is the pruning mechanism. One PASS deep in the graph collapses the whole
+/// ancestor cone.
 #[test]
 fn closure_collapses_the_ancestor_cone() {
     let g = graph(
@@ -277,17 +274,15 @@ fn closure_collapses_the_ancestor_cone() {
 
     // z is isolated, so it is the only thing left to start on besides nothing.
     assert_eq!(ids(&g.outer_fringe(&closed)), vec!["z"]);
-    // Only d is on the frontier of what is known; a, b, c are prerequisites of it.
+    // Only d is on the frontier of what is known. a, b and c are prerequisites of it.
     assert_eq!(ids(&g.inner_fringe(&closed)), vec!["d"]);
 }
 
-/// `validate` rewrites the goal file in place and keeps no backup, so its report is
-/// the only surviving copy of whatever it removed. An id cannot rebuild a node: the
-/// authored content is the expensive part, and a report naming only the id tells the
-/// author what they lost without letting them put it back.
+/// `validate` rewrites the goal file in place and keeps no backup, so its report is the
+/// only surviving copy of what it removed. An id cannot rebuild a node, because the
+/// authored content is the expensive part.
 ///
-/// This is the property, not the field type: drop a node, and paste it back out of
-/// the report.
+/// The test drops a node and pastes it back out of the report.
 #[test]
 fn a_dropped_node_can_be_restored_from_the_report_alone() {
     let mut authored = node("hand_written", 45);
@@ -301,14 +296,14 @@ fn a_dropped_node_can_be_restored_from_the_report_alone() {
     let mut g = graph(vec![node("kept", 10), authored.clone()], vec![]);
     let report = g.validate(RELEVANCE_FLOOR, NODE_CAP);
 
-    // Gone from the graph, and the file on disk would now be missing it.
+    // Gone from the graph, so the file on disk is now missing it.
     assert_eq!(ids(&g.nodes.iter().map(|n| n.id.clone()).collect::<Vec<_>>()), vec!["kept"]);
 
-    // Every authored field comes back, not just the name.
+    // Every authored field comes back, not only the name.
     assert_eq!(report.dropped_irrelevant, vec![authored.clone()]);
 
-    // The real test: put it back and the graph is whole again, byte for byte
-    // through the same serialisation the goal file uses.
+    // Put it back and the graph is whole again, through the same serialisation the goal
+    // file uses.
     let recovered: Node = serde_json::from_str(
         &serde_json::to_string(&report.dropped_irrelevant[0]).unwrap(),
     )
@@ -323,9 +318,9 @@ fn a_dropped_node_can_be_restored_from_the_report_alone() {
     assert_eq!(restored.nodes[1].goals, authored.goals);
 }
 
-/// The cap path builds its own ordering and drops by index, which is the easiest
-/// place to return the wrong node with the right id. Least-relevant-first ordering
-/// is documented, and the survivors keep the order the author wrote.
+/// The cap path builds its own ordering and drops by index, which is the easiest place
+/// to return the wrong node with the right id. Least-relevant-first ordering is
+/// documented, and the survivors keep the order the author wrote.
 #[test]
 fn nodes_dropped_over_cap_come_back_whole_and_least_relevant_first() {
     let mut nodes = Vec::new();

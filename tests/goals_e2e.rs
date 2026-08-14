@@ -1,12 +1,10 @@
 //! The discovery verb, against a real store.
 //!
-//! `goals` is the first command anyone runs and the one that tells an agent where to
-//! write a new graph. It has to work on a machine where nothing exists yet, and it has
-//! to keep working when part of the store is corrupt — a half-written file is precisely
-//! when you need to see what you still have. Both properties were broken when this was
-//! written, and both are one stray `?` away from breaking again, so they are pinned
-//! here rather than in a library test: the behaviour lives in the binary's argument
-//! handling and only a real process exercises it.
+//! `goals` is the first command anyone runs, and it tells an agent where to write a new
+//! graph. It has to work on a machine where nothing exists yet, and it has to keep
+//! working when part of the store is corrupt. Both properties were broken once, and both
+//! are one stray `?` from breaking again. The behaviour lives in the binary's argument
+//! handling, so only a real process exercises it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,10 +35,9 @@ fn goals(data_home: &Path) -> (bool, serde_json::Value) {
     (out.status.success(), parsed)
 }
 
-/// A graph these tests can store and read back. Written out here rather than loaded
-/// from a file in the repo: this tool ships no goal corpus, because the graph is the
-/// thing the user is supposed to build for their own domain. Two nodes and one edge
-/// is all any assertion below needs.
+/// A graph these tests can store and read back. Written here and not loaded from the
+/// repo, because this tool ships no goal corpus. The user builds the graph for their own
+/// domain. Two nodes and one edge cover every assertion below.
 fn real_graph() -> String {
     r#"{
       "goal": { "id": "ramp", "target": "ship a service on the new stack",
@@ -62,8 +59,8 @@ fn real_graph() -> String {
     .to_string()
 }
 
-/// Counted from the fixture rather than written down at each assertion, so editing
-/// the graph above cannot fail a test for a reason unrelated to what it checks.
+/// Counted from the fixture, so editing the graph above cannot fail a test for an
+/// unrelated reason.
 fn real_graph_nodes() -> usize {
     serde_json::from_str::<serde_json::Value>(&real_graph())
         .expect("fixture parses")["nodes"]
@@ -72,10 +69,9 @@ fn real_graph_nodes() -> usize {
         .len()
 }
 
-/// On a machine where nothing has been stored, the directory it names must exist
-/// afterwards. The binary never writes the first graph — the agent does — so if this
-/// command does not create the directory, nothing will, and the agent's first write
-/// fails with ENOENT on the documented happy path.
+/// On a fresh machine, the directory this command names must exist afterwards. The agent
+/// writes the first graph, not the binary. If this command does not create the directory,
+/// the agent's first write fails with ENOENT on the documented happy path.
 #[test]
 fn a_fresh_machine_gets_a_directory_it_can_actually_write_into() {
     let home = store("fresh");
@@ -95,8 +91,8 @@ fn a_fresh_machine_gets_a_directory_it_can_actually_write_into() {
     assert_eq!(v["goals"][0]["nodes"], real_graph_nodes());
 }
 
-/// A corrupt graph is named in place; every readable goal still lists. Failing the
-/// whole command would hide the store exactly when the user needs to see it.
+/// A corrupt graph is named in place, and every readable goal still lists. Failing the
+/// whole command hides the store when the user most needs to see it.
 #[test]
 fn an_unreadable_graph_does_not_hide_the_readable_ones() {
     let home = store("badgraph");
@@ -122,9 +118,9 @@ fn an_unreadable_graph_does_not_hide_the_readable_ones() {
     );
 }
 
-/// The fluency sibling rots independently of the graph. Losing practice history does
-/// not make the goal unreadable, and it must not take the listing down with it — this
-/// is the same bug as above, one file over, and it survived the first fix.
+/// The fluency sibling rots independently of the graph. Losing practice history does not
+/// make the goal unreadable, and it must not take the listing down. This is the same bug
+/// as above, one file over, and it survived the first fix.
 #[test]
 fn an_unreadable_fluency_file_costs_only_the_practice_counts() {
     let home = store("badfluency");
@@ -148,15 +144,15 @@ fn an_unreadable_fluency_file_costs_only_the_practice_counts() {
 }
 
 /// The fluency file shares its goal's directory and stem prefix. Listing it as a goal
-/// would send the caller off to parse practice history as a graph.
+/// sends the caller off to parse practice history as a graph.
 #[test]
 fn a_healthy_store_reports_practice_and_never_lists_the_fluency_sibling() {
     let home = store("healthy");
     let (_, v) = goals(&home);
     let dir = PathBuf::from(v["dir"].as_str().unwrap());
     fs::write(dir.join("ramp.json"), real_graph()).unwrap();
-    // Written with the pre-split key name on purpose: files this old must keep
-    // loading, and `mastery` carries a `serde(alias = "confidence")` for exactly this.
+    // Written with the pre-split key name on purpose. Files this old must keep loading,
+    // and `mastery` carries a `serde(alias = "confidence")` for that.
     fs::write(
         dir.join("ramp.fluency.json"),
         r#"{"sql_joins": {"confidence": 2.0, "last_practiced": 0, "attempts": 1, "best_score": 1.0}}"#,
@@ -168,8 +164,8 @@ fn a_healthy_store_reports_practice_and_never_lists_the_fluency_sibling() {
     let goals = v["goals"].as_array().unwrap();
     assert_eq!(goals.len(), 1, "the fluency sibling was listed: {goals:#?}");
     assert_eq!(goals[0]["practised"], 1, "the old key did not survive the rename");
-    // Past the ceiling, and last practised at the epoch, so a check is long overdue.
-    // Reported as two separate facts: reaching the ceiling is not retirement.
+    // Past the ceiling, and last practised at the epoch, so a check is overdue. Two
+    // separate facts: reaching the ceiling is not retirement.
     assert_eq!(goals[0]["at_ceiling"], 1);
     assert_eq!(goals[0]["due"], 1);
     assert!(goals[0]["retired"].is_null(), "retirement no longer exists");
@@ -177,9 +173,8 @@ fn a_healthy_store_reports_practice_and_never_lists_the_fluency_sibling() {
 }
 
 /// `practised` has to mean "sat down to this", not "a record exists". An `encompasses`
-/// edge opens a fluency entry for the node underneath at zero attempts, and counting
-/// those told the learner they had drilled something they never once attempted — the
-/// same overstatement as counting a claim as knowledge.
+/// edge opens a fluency entry for the node underneath at zero attempts. Counting those
+/// told the learner they had drilled something they never attempted.
 #[test]
 fn credit_from_an_encompasses_edge_is_not_counted_as_practice() {
     let home = store("credit");

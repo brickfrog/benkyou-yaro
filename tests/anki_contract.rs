@@ -1,9 +1,8 @@
 //! Card emission contracts, and where a push goes.
 //!
-//! Three things here are load-bearing and easy to get quietly wrong: note identity
-//! must not depend on card text, code content must survive into the card, and `--push`
-//! must write to the collection the caller named rather than to whatever is listening
-//! on this machine.
+//! Three things are load-bearing. Note identity must not depend on card text. Code
+//! content must survive into the card. `--push` must write to the collection the caller
+//! named, not to whatever is listening on this machine.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -22,8 +21,8 @@ fn card(concept: &str, role: Role, front: &str, back: &str) -> Card {
     }
 }
 
-/// The whole point: editing a card's text must not change its identity, or the
-/// regenerated note lands as a new note and its review history is discarded.
+/// Editing a card's text must not change its identity. Otherwise the regenerated note
+/// lands as a new note and its review history is discarded.
 #[test]
 fn note_identity_survives_an_edit_to_the_card_text() {
     let before = card("pandas_groupby", Role::Definition, "What is groupby?", "Splits.");
@@ -70,12 +69,11 @@ fn code_markup_survives_sanitization() {
     assert!(!out.contains("&lt;code&gt;"), "{out}");
 }
 
-/// Everything off the allowlist is escaped, including anything carrying attributes,
-/// which is what keeps handlers and javascript URLs out by construction.
+/// Everything off the allowlist is escaped, including anything carrying attributes. That
+/// keeps handlers and javascript URLs out by construction.
 ///
-/// The property asserted is that no *live* markup survives: an escaped `&lt;img ...`
-/// still contains the word "onerror" as inert text, and that is fine. What must not
-/// happen is a `<` that opens a tag the allowlist does not name.
+/// The test asserts that no live markup survives. An escaped `img` tag still contains
+/// the word "onerror" as inert text, which is fine.
 #[test]
 fn markup_off_the_allowlist_is_escaped() {
     const ALLOWED: &[&str] =
@@ -134,8 +132,8 @@ fn tags_cannot_split_into_two() {
     assert!(note.tags.iter().any(|t| t.contains("some_concept")));
 }
 
-/// Cloze cards must go to the cloze notetype; everything else to basic. Sending a
-/// cloze to a basic model produces a card that never reveals anything.
+/// Cloze cards go to the cloze notetype, everything else to basic. A cloze sent to a
+/// basic model produces a card that never reveals anything.
 #[test]
 fn cloze_cards_use_the_cloze_model() {
     assert_eq!(card("c", Role::Cloze, "f", "b").model_name(), MODEL_CLOZE);
@@ -160,9 +158,8 @@ fn a_note_carries_every_field_the_models_declare() {
 }
 
 /// A malformed address is refused before anything is built, and the refusal names the
-/// form that was wanted. The two guesses worth pinning are a URL — this posts to a bare
-/// address — and an unbracketed IPv6 literal, whose colons cannot be told from the port
-/// separator.
+/// form it wanted. Two guesses are worth pinning: a URL, because this posts to a bare
+/// address, and an unbracketed IPv6 literal, whose colons hide the port separator.
 #[test]
 fn an_address_that_is_not_host_port_is_refused() {
     for bad in [
@@ -192,7 +189,7 @@ fn serve_fake_anki(listener: TcpListener, calls: usize) -> Vec<String> {
         let (mut sock, _) = listener.accept().expect("accept");
         let mut raw = Vec::new();
         let mut buf = [0u8; 4096];
-        // Read until the body is in hand. `read_to_end` would block: the client keeps
+        // Read until the body is in hand. `read_to_end` blocks, because the client keeps
         // the socket open for the reply.
         loop {
             let n = sock.read(&mut buf).expect("read request");
@@ -215,8 +212,8 @@ fn serve_fake_anki(listener: TcpListener, calls: usize) -> Vec<String> {
 
         let result = match action.as_str() {
             "version" => serde_json::json!(6),
-            // Both notetypes already exist, so nothing is created: this test is about
-            // where the traffic went, not about model creation.
+            // Both notetypes already exist, so nothing is created. This test is about
+            // where the traffic went.
             "modelNames" => serde_json::json!([MODEL_BASIC, MODEL_CLOZE]),
             "findNotes" => serde_json::json!([]),
             "addNote" => serde_json::json!(1234),
@@ -242,9 +239,9 @@ fn body_len(request: &str) -> Option<usize> {
         .and_then(|v| v.parse().ok())
 }
 
-/// `--anki-addr` is the whole point of the flag: Anki on another machine, reached
-/// through a forwarded port. A push that ignored it would silently write to this
-/// machine's collection, or fail with nothing listening while Anki is plainly running.
+/// `--anki-addr` names Anki on another machine, reached through a forwarded port. A push
+/// that ignored it writes to this machine's collection, or fails with nothing listening
+/// while Anki is plainly running.
 #[test]
 fn push_goes_to_the_address_it_was_given() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake anki");
@@ -266,7 +263,7 @@ fn push_goes_to_the_address_it_was_given() {
     )
     .expect("write cards");
 
-    // version, modelNames, createDeck, findNotes, addNote — five calls, five sockets.
+    // version, modelNames, createDeck, findNotes, addNote. Five calls, five sockets.
     let server = std::thread::spawn(move || serve_fake_anki(listener, 5));
 
     let out = Command::new(env!("CARGO_BIN_EXE_benkyou"))
@@ -298,8 +295,8 @@ fn push_goes_to_the_address_it_was_given() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The dry run is the rehearsal for the push. An address the push would refuse has to
-/// fail here too, or the rehearsal is not one.
+/// The dry run is the rehearsal for the push. An address the push refuses has to fail
+/// here too.
 #[test]
 fn a_dry_run_refuses_an_address_the_push_would_refuse() {
     let dir = std::env::temp_dir().join(format!("benkyou-anki-dry-{}", std::process::id()));

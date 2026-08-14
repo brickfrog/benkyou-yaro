@@ -1,7 +1,7 @@
 //! The gate, end to end, against a real exercise.
 //!
-//! This is the test that proves the thesis: a generated exercise is only real if the
-//! reference solution passes it and the untouched starting state fails it.
+//! A generated exercise is sound only if the reference solution passes it and the
+//! untouched starting state fails it.
 
 use std::fs;
 use std::path::PathBuf;
@@ -10,10 +10,12 @@ use benkyou::exercise::{self, GateFailure, GateOutcome, Verdict};
 use benkyou::gate::run_gate;
 use benkyou::run::{Backend, Want};
 
-/// Every test runs under the backend a user gets by default. Proving containment
-/// against anything else would prove nothing.
+/// `Want::Auto` accepts either isolating backend, so the refusal names both.
 fn sandbox() -> Backend {
-    Backend::choose(Want::Auto, None).expect("a sandbox: install bubblewrap")
+    Backend::choose(Want::Auto, None).expect(
+        "no sandbox and no container engine: install bubblewrap, or install \
+         docker/podman and run `benkyou runner --pull`",
+    )
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -52,8 +54,8 @@ fn a_sound_exercise_is_validated() {
     );
 }
 
-/// A check that passes on an empty workspace asserts nothing, and must be rejected
-/// even though the reference solution also passes it.
+/// A check that passes on an empty workspace asserts nothing. It is rejected even though
+/// the reference solution also passes it.
 #[test]
 fn a_vacuous_check_is_rejected() {
     let src = fixture("dedupe");
@@ -85,8 +87,8 @@ fn a_vacuous_check_is_rejected() {
     }
 }
 
-/// An exercise whose reference solution does not pass its own checks is unsolvable
-/// as written, and must be rejected before a learner ever sees it.
+/// An exercise whose reference solution fails its own checks is unsolvable as written.
+/// It is rejected before a learner sees it.
 #[test]
 fn an_unsolvable_exercise_is_rejected() {
     let src = fixture("dedupe");
@@ -118,8 +120,8 @@ fn an_unsolvable_exercise_is_rejected() {
     }
 }
 
-/// The learner-facing detail must survive from the grader to the verdict, because
-/// "wrong on these inputs" teaches and "3/7 failed" does not.
+/// The grader's detail must survive to the verdict. "Wrong on these inputs" teaches and
+/// "3/7 failed" does not.
 #[test]
 fn the_graders_detail_reaches_the_caller() {
     let report = run_gate(&fixture("dedupe"), &scratch("detail"), "t", &sandbox()).expect("gate ran");
@@ -151,8 +153,8 @@ fn copy_fixture(name: &str) -> PathBuf {
 
 /// Gating records what it ran against, and the exercise is showable afterwards.
 ///
-/// The positive case has to be asserted here or every negative case below is
-/// satisfied by a `require_current` that refuses everything.
+/// Without this positive case, every negative case below is satisfied by a
+/// `require_current` that refuses everything.
 #[test]
 fn gating_records_the_content_and_the_exercise_becomes_showable() {
     let dir = copy_fixture("stamp");
@@ -174,8 +176,8 @@ fn gating_records_the_content_and_the_exercise_becomes_showable() {
     assert!(dir.join(".gate.json").is_file(), "no sidecar was written");
 }
 
-/// The property the digest exists for: every part of an exercise that decides what a
-/// learner sees or how they are graded must ungate it when it changes.
+/// Every part of an exercise that decides what a learner sees, or how they are graded,
+/// must ungate it when it changes.
 #[test]
 fn editing_any_content_after_gating_ungates_the_exercise() {
     // (name, path to touch, new content)
@@ -204,8 +206,8 @@ fn editing_any_content_after_gating_ungates_the_exercise() {
     }
 }
 
-/// `task.toml` is hashed byte for byte, so a limit or a grader command that moved
-/// after gating ungates too - and so does a section this binary does not parse.
+/// `task.toml` is hashed byte for byte, so a limit or a grader command that moved after
+/// gating ungates too. So does a section this binary does not parse.
 #[test]
 fn editing_the_task_file_ungates_the_exercise() {
     for (i, addition) in ["\nlearner_secs = 5\n", "\n[[negative]]\nid = \"future\"\n"]
@@ -231,8 +233,8 @@ fn editing_the_task_file_ungates_the_exercise() {
     }
 }
 
-/// Rewriting a file with the bytes it already had is not a change. Without this the
-/// digest would be a modification-time check wearing a hash for a hat.
+/// Rewriting a file with the bytes it already had is not a change. Otherwise the digest
+/// is a modification-time check in disguise.
 #[test]
 fn rewriting_a_file_unchanged_keeps_the_exercise_showable() {
     let dir = copy_fixture("touch");
@@ -250,15 +252,11 @@ fn rewriting_a_file_unchanged_keeps_the_exercise_showable() {
     exercise::require_current(&dir, &sandbox()).expect("an identical rewrite must not ungate");
 }
 
-/// An exercise that moves while its own gate is running cannot be certified: the runs
-/// describe a snapshot, and the verdict is written next to a directory that is no
-/// longer that snapshot.
+/// An exercise that moves while its own gate runs cannot be certified. The runs describe
+/// a snapshot, and the verdict lands next to a directory that is no longer that snapshot.
 ///
-/// The scenario used to be "a check script writes back into the directory it was
-/// copied from". The sandbox retired that one — a grader cannot reach its own source
-/// any more, and this test used to prove it by failing here. What is left is an editor
-/// saving mid-gate, or a second process touching the tree, so that is what this does:
-/// a slow grader and a concurrent write.
+/// The case here is an editor saving mid-gate. The earlier case, a check script writing
+/// back into its source directory, is now impossible under the sandbox.
 #[test]
 fn an_exercise_that_changes_mid_gate_is_rejected() {
     let dir = copy_fixture("midgate");
@@ -286,9 +284,8 @@ fn an_exercise_that_changes_mid_gate_is_rejected() {
     }
 }
 
-/// The retired half of the test above, kept as a property in its own right: a grader
-/// cannot reach the exercise directory it was copied from. Before the sandbox this was
-/// a live hazard the digest could only detect after the fact.
+/// A grader cannot reach the exercise directory it was copied from. Before the sandbox
+/// the digest reported this only after the fact.
 #[test]
 fn a_grader_cannot_reach_the_exercise_directory() {
     let dir = copy_fixture("noreach");
@@ -311,16 +308,11 @@ fn a_grader_cannot_reach_the_exercise_directory() {
 // Named wrong answers
 // ---------------------------------------------------------------------------
 
-/// The failure the whole feature exists for, end to end.
+/// The failure the feature exists for, end to end.
 ///
-/// A model that misreads "deduplicate, preserving first appearance" as "unique
-/// elements, sorted" writes a reference solution and a set of hidden cases that agree
-/// with each other. Both original gate directions hold: the reference passes, the
-/// untouched stub fails. Nothing about running the exercise twice can see the problem,
-/// because the misreading is common to everything the model wrote.
-///
-/// The author's own named wrong answer is the one artifact that disagrees, and the
-/// contradiction is arithmetic rather than a matter of judgement.
+/// A model that misreads the task writes a reference solution and hidden cases that
+/// agree with each other, so both gate directions hold. The author's named wrong answer
+/// is the one artifact that disagrees.
 #[test]
 fn a_grader_that_misread_the_concept_is_rejected_by_its_own_trap() {
     let dir = copy_fixture("drift");
@@ -377,16 +369,15 @@ fn an_exercise_with_no_named_wrong_answer_is_rejected() {
     exercise::require_current(&dir, &sandbox()).expect_err("and it must not be showable");
 }
 
-/// Each candidate gets a fresh workspace. Sharing one would let the first candidate's
-/// files survive into the second, so a trap could spring on residue rather than on the
-/// answer it describes — and the gate would report a catch it did not earn.
+/// Each candidate gets a fresh workspace. A shared one lets the first candidate's files
+/// survive into the second, so a trap can spring on residue instead of on the answer.
 #[test]
 fn each_candidate_runs_in_its_own_workspace() {
     let dir = copy_fixture("fresh");
     let path = dir.join("task.toml");
     let mut text = fs::read_to_string(&path).expect("read");
-    // A candidate that writes a *correct* solution to a second file. If workspaces
-    // leaked, the later candidate would inherit it.
+    // A candidate that writes a correct solution plus a second file. A leaked workspace
+    // hands that file to the next candidate.
     text.push_str(
         "\n[[known_bad]]\nid = \"leaves_litter\"\ntrap = \"writes an unrelated file\"\n\
          files.\"solution.py\" = \"\"\"\ndef dedupe(xs):\n    return list(xs)\n\"\"\"\n\
@@ -420,7 +411,7 @@ fn each_candidate_runs_in_its_own_workspace() {
 }
 
 /// A candidate cannot write outside the workspace. A generated `task.toml` naming
-/// `../check/cases.py` would otherwise rewrite the tests it is being judged by.
+/// `../check/cases.py` otherwise rewrites the tests it is judged by.
 #[test]
 fn a_candidate_cannot_write_outside_the_workspace() {
     let dir = copy_fixture("escape");

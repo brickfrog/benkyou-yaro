@@ -1,23 +1,24 @@
 //! What the execution boundary must guarantee.
 //!
-//! Two halves. The first is the old contract and still the one a hang would break:
-//! report the command's result faithfully, and *always terminate*. The second is new
-//! and is the reason this module exists — a job reaches what its view names and
-//! nothing else.
+//! Two halves: report the command's result faithfully and always terminate, and reach
+//! nothing the view did not name.
 //!
-//! Everything here runs under the real backend a user gets, which is the sandbox. A
-//! test that proved containment against a mock would prove nothing; if `bwrap` is
-//! missing these fail, which is the same answer the tool gives.
+//! Everything runs under the sandbox, which is the backend a user gets. A missing
+//! `bwrap` fails these tests, the same answer the tool gives.
 
 use std::path::PathBuf;
 
 use benkyou::run::{Access, Backend, Job, Limits, Want};
 
+/// `Want::Auto` accepts either isolating backend, so the refusal names both.
 fn sandbox() -> Backend {
-    Backend::choose(Want::Auto, None).expect("a sandbox: install bubblewrap")
+    Backend::choose(Want::Auto, None).expect(
+        "no sandbox and no container engine: install bubblewrap, or install \
+         docker/podman and run `benkyou runner --pull`",
+    )
 }
 
-/// A run directory with a `work/` in it, which is what every real job has.
+/// A run directory with a `work/` in it, like every job has.
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("benkyou-run-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -59,8 +60,7 @@ fn a_successful_command_succeeds() {
     assert_eq!(out.exit_code, Some(0));
 }
 
-/// A missing command is a broken exercise, not a failing attempt, and the grading
-/// layer distinguishes them by exit code.
+/// Grading reads 127 as a broken exercise, not a wrong answer.
 #[test]
 fn a_missing_command_reports_127() {
     let out = run(&scratch("missing"), "definitely-not-a-real-binary", 30);
@@ -68,8 +68,8 @@ fn a_missing_command_reports_127() {
     assert!(!out.timed_out);
 }
 
-/// Writes land on the host, in the directory the view named. Without this the sandbox
-/// would be airtight and useless: the learner's work has to survive the run.
+/// Writes land on the host, in the directory the view named. The learner's work has to
+/// survive the run.
 #[test]
 fn writes_reach_the_host_directory() {
     let dir = scratch("writes");
@@ -83,10 +83,8 @@ fn writes_reach_the_host_directory() {
 // Containment
 // ---------------------------------------------------------------------------
 
-/// The property the whole boundary exists for: a sibling directory that the view did
-/// not name is not on the filesystem the job sees.
-///
-/// This is the gate's `check/` versus its reference solution, in miniature.
+/// A sibling directory the view did not name is not there. This is the gate's `check/`
+/// against its reference solution, in miniature.
 #[test]
 fn a_directory_outside_the_view_does_not_exist() {
     let dir = scratch("view");
@@ -98,8 +96,7 @@ fn a_directory_outside_the_view_does_not_exist() {
     assert!(out.stdout.trim().is_empty(), "{out:?}");
 }
 
-/// A read-only entry in the view is read-only. The gate hands `check/` over this way,
-/// so a grader cannot rewrite the tests it is being judged by.
+/// A read-only view entry is read-only. The gate hands `check/` over this way.
 #[test]
 fn a_read_only_view_entry_cannot_be_written() {
     let dir = scratch("ro");
@@ -121,33 +118,27 @@ fn a_read_only_view_entry_cannot_be_written() {
     assert_eq!(body, "original");
 }
 
-/// The user's own files are not reachable by absolute path either. The view is the
-/// whole filesystem, not a working-directory convention.
+/// Absolute host paths do not work either. The view is the only filesystem the job has.
 #[test]
 fn the_host_filesystem_is_not_reachable() {
     let dir = scratch("host");
     let witness = dir.join("witness");
     std::fs::write(&witness, "do not read me").unwrap();
 
-    // Its own run directory, by absolute host path — the most likely accident.
+    // Its own run directory, by absolute host path. The most likely accident.
     let out = run(&dir, &format!("cat {}", witness.display()), 30);
     assert!(!out.succeeded(), "{out:?}");
 
-    // And a real home directory, the thing a bad `rm` or a curious script goes for.
+    // And a home directory, what a bad `rm` goes for.
     let out = run(&dir, "ls /home && ls /root", 30);
     assert!(!out.succeeded(), "enumerated real home directories: {out:?}");
 }
 
-/// No network. A grader that fetches a dataset is an exercise that stops working
-/// offline and a generated script that phones out is worse; both should fail loudly
-/// here rather than silently succeed once.
+/// No network. A grader that fetches stops working offline.
 ///
-/// Two probes, and the reason is that the first one was silently platform-dependent:
-/// `exec 3<>/dev/tcp/...` is a bash feature, so on any machine whose `/bin/sh` is dash —
-/// which is most of Debian and everything derived from it — the redirection failed on
-/// syntax and this test passed without ever opening a socket. The script now says which
-/// probe it managed to run, and the assertion requires one of them, so a probe that stops
-/// running can no longer read as a probe that found nothing.
+/// Two probes, because the first was platform-dependent. `/dev/tcp` is a bash feature,
+/// so on a dash `/bin/sh` it failed on syntax and passed without opening a socket. The
+/// script names the probe it ran.
 #[test]
 fn there_is_no_network() {
     let out = run(
@@ -163,10 +154,8 @@ fn there_is_no_network() {
     assert!(!out.stdout.contains("CONNECTED"), "{out:?}");
 }
 
-/// `HOME` is real and writable but is not the workspace and is not the user's. A
-/// grader that writes a cache into `$HOME` is common; one that writes into the real
-/// one is not acceptable, and one that gets `HOME=/nonexistent` breaks tooling that
-/// had nothing to do with the exercise.
+/// `HOME` is writable, is not the workspace, and is not the user's. A grader that caches
+/// into `$HOME` must not reach the real one, and `HOME=/nonexistent` breaks tooling.
 #[test]
 fn home_is_writable_and_is_not_the_users() {
     let out = run(
@@ -179,8 +168,8 @@ fn home_is_writable_and_is_not_the_users() {
     assert!(!out.stdout.contains("/home/"), "HOME was a real home: {out:?}");
 }
 
-/// The environment is an allowlist. A verdict that depended on the caller's
-/// `PYTHONPATH` is a verdict that will not reproduce.
+/// The environment is an allowlist. A verdict that depended on the caller's `PYTHONPATH`
+/// will not reproduce.
 #[test]
 fn the_environment_is_scrubbed() {
     std::env::set_var("BENKYOU_TEST_LEAK", "leaked");
@@ -208,10 +197,9 @@ fn a_hanging_command_hits_the_deadline() {
 
 /// The regression that matters most.
 ///
-/// A script can exit while leaving a background process holding the inherited stdout
-/// pipe open. Reading that pipe to end then never returns, so draining it on a thread
-/// and joining unconditionally hangs forever — a worse failure than the timeout it was
-/// meant to replace, because no deadline fires and the gate never answers.
+/// A script can exit while a background process holds the inherited stdout pipe open.
+/// Reading that pipe to end never returns, so an unconditional join hangs with no
+/// deadline left to fire.
 #[test]
 fn a_backgrounded_grandchild_cannot_hang_the_runner() {
     let out = run(
@@ -223,8 +211,8 @@ fn a_backgrounded_grandchild_cannot_hang_the_runner() {
     assert!(out.elapsed_secs < 20.0, "took {}s", out.elapsed_secs);
 }
 
-/// The deadline kills the whole tree, not just the shell. A survivor would keep
-/// running against the workspace long after a verdict was reported.
+/// The deadline kills the whole tree, not just the shell. A survivor keeps running
+/// against the workspace after the verdict.
 #[test]
 fn the_deadline_kills_the_whole_process_tree() {
     let dir = scratch("tree");
@@ -242,11 +230,10 @@ fn the_deadline_kills_the_whole_process_tree() {
     assert_eq!(before, after, "a process outlived the deadline and kept writing");
 }
 
-/// An output bomb is reported as an output bomb, not as a hang.
+/// An output bomb is reported as truncation, not as a hang.
 ///
-/// Stopping the read would block the child on a full pipe until the deadline, which
-/// turns "printed too much" into "timed out" and loses the actual finding. Reading and
-/// discarding keeps the exit code meaningful and bounds this process's memory.
+/// Stopping the read blocks the child on a full pipe until the deadline, which turns
+/// "printed too much" into "timed out".
 #[test]
 fn runaway_output_is_truncated_not_hung() {
     let dir = scratch("flood");
@@ -260,8 +247,7 @@ fn runaway_output_is_truncated_not_hung() {
     assert!(out.stdout.len() <= 64 * 1024, "kept {} bytes", out.stdout.len());
 }
 
-/// `/tmp` is a bounded tmpfs, so a runaway write fills a ceiling rather than the
-/// user's disk.
+/// `/tmp` is a bounded tmpfs, so a runaway write fills a ceiling, not the user's disk.
 #[test]
 fn the_scratch_filesystem_is_bounded() {
     let out = run(
@@ -278,15 +264,14 @@ fn the_scratch_filesystem_is_bounded() {
 // Policy
 // ---------------------------------------------------------------------------
 
-/// The default is isolation, and asking for the other one is not a matter of degree.
+/// The default is isolation. The host backend is a separate, explicit request.
 #[test]
 fn the_default_backend_is_the_sandbox() {
     assert_eq!(Backend::choose(Want::Auto, None).expect("a sandbox").name(), "sandbox");
     assert_eq!(Backend::choose(Want::UnsafeHost, None).expect("host").name(), "unsafe-host");
 }
 
-/// A job that names a directory the caller never created is the caller's bug, and it
-/// is reported as that rather than as a mount failure from inside the sandbox.
+/// A view naming a directory the caller never created is refused, not left to the sandbox.
 #[test]
 fn a_view_naming_a_missing_directory_is_refused() {
     let dir = scratch("absent");
@@ -302,8 +287,8 @@ fn a_view_naming_a_missing_directory_is_refused() {
     assert!(err.contains("nope"), "{err}");
 }
 
-/// A fork bomb is contained and, more importantly, the containment does not depend on
-/// the host having spare process slots.
+/// A fork bomb is contained, and the containment does not depend on the host having
+/// spare process slots.
 #[test]
 fn a_fork_bomb_is_contained() {
     let dir = scratch("bomb");
@@ -316,14 +301,11 @@ fn a_fork_bomb_is_contained() {
     assert!(!out.succeeded() || out.timed_out, "{out:?}");
 }
 
-/// The process cap must never be applied on the host, where `RLIMIT_NPROC` is counted
-/// against the whole logged-in user.
+/// The process cap must never apply on the host, where `RLIMIT_NPROC` counts the whole
+/// logged-in user.
 ///
-/// This is a regression test for a bug that shipped nothing but did reject a perfectly
-/// good exercise: a desktop session holds several hundred processes, so a cap of 512
-/// made the reference solution's very first `fork` fail with "Resource temporarily
-/// unavailable". The sandbox is unaffected because its user namespace starts the count
-/// at zero — which is exactly why the cap belongs there and only there.
+/// A cap of 512 once failed a reference solution's first `fork`: a desktop session holds
+/// several hundred processes. The sandbox counts from zero in its own user namespace.
 #[test]
 fn the_host_backend_can_still_fork() {
     let dir = scratch("hostfork");
