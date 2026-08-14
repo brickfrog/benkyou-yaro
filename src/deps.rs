@@ -46,23 +46,125 @@
 //! the tree gets to execute during a warm. An exercise wanting a package with no wheel
 //! is an exercise that does not get warmed, which is the correct outcome.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 use crate::digest::{hex, Sha256};
 use crate::exercise::Deps;
+use crate::run::Backend;
 use crate::store::cache_dir;
 
 /// Where a warmed set appears inside a job. A dotted name, beside `.home`, so it does
 /// not collide with the exercise's own `work/`, `check/` or `out/`.
 pub const GUEST_DEPS: &str = "/box/.deps";
 
-/// The interpreter every job gets: the host's, because `/usr` is what the sandbox
-/// mounts read-only. Warming against anything else builds wheels for an ABI the job
-/// cannot load.
+/// The interpreter a *host-run* job gets, because `/usr` is what the sandbox mounts
+/// read-only. Warming against anything else builds wheels for an ABI the job cannot
+/// load. Under the container backend the interpreter is the image's instead, and
+/// [`Runtime`] is what keeps the two from being confused for one another.
 pub const INTERPRETER: &str = "/usr/bin/python3";
+
+/// The runtime a warmed set belongs to.
+///
+/// A set is a tree of compiled wheels, and "which interpreter" is a different question
+/// under each backend. The sandbox and the host backend both run the machine's
+/// `/usr/bin/python3`, so its ABI tag is the whole answer. A container runs the image's
+/// interpreter, and the image is pinned by digest — so the answer there includes the
+/// image, because two images with the same Python minor version are still two different
+/// sets of bytes, and one of them may not have the C library the other's wheels linked
+/// against.
+///
+/// Getting this wrong is not a cache miss. Wheels for the wrong ABI import as a
+/// `ModuleNotFoundError` deep inside a package that is plainly installed, which is a
+/// `CheckBroken` verdict sending the author to debug a grader that is fine.
+#[derive(Debug, Clone, Copy)]
+pub enum Runtime<'a> {
+    /// The machine's `/usr/bin/python3`, warmed by the host's `uv`.
+    Host,
+    /// An image's `python3`, warmed by `pip` inside that image.
+    Image { cli: &'a Path, engine: &'static str, image: &'a crate::run::Image },
+}
+
+impl<'a> Runtime<'a> {
+    /// The runtime the given backend will actually run a job in.
+    pub fn of(backend: &'a Backend) -> Self {
+        match backend {
+            Backend::Container { cli, engine, image, .. } => {
+                Runtime::Image { cli, engine, image }
+            }
+            _ => Runtime::Host,
+        }
+    }
+
+    /// The cache segment a set for this runtime lives under.
+    ///
+    /// The host segment is the bare ABI tag and always has been: changing it would
+    /// orphan every set already on disk for a rename nobody asked for. An image segment
+    /// names all four things that decide whether a wheel loads — the image, the
+    /// architecture it resolved to, that image's ABI tag, and (through the directory
+    /// below) the dependency list.
+    fn key(&self) -> Result<String, String> {
+        match self {
+            Runtime::Host => Ok(abi()?.to_string()),
+            Runtime::Image { cli, engine, image } => {
+                let abi = image_abi(cli, engine, image)?;
+                // The id is `sha256:` and 64 hex characters; twelve of them is what the
+                // rest of this tool shows a reader, and the arch and ABI beside it mean
+                // a collision would have to be a collision in three fields at once.
+                let short: String =
+                    image.id.trim_start_matches("sha256:").chars().take(12).collect();
+                Ok(format!("{short}-{}-{abi}", image.arch))
+            }
+        }
+    }
+
+    /// What to tell a reader who has to fix something here.
+    fn describe(&self) -> Result<String, String> {
+        match self {
+            Runtime::Host => Ok(format!("{INTERPRETER} ({})", abi()?)),
+            Runtime::Image { image, .. } => Ok(image.reference.clone()),
+        }
+    }
+}
+
+/// The ABI tag of an image's `python3`, memoised per image id.
+///
+/// Read from inside the image rather than guessed from its tag: `python:3.13-slim` says
+/// nothing about the platform triple in `SOABI`, and that triple is half of what decides
+/// whether a wheel loads. Memoised because a gate asks three times and starting a
+/// container is not free; keyed by id, so two images cannot share an answer.
+fn image_abi(cli: &Path, engine: &str, image: &crate::run::Image) -> Result<String, String> {
+    static SEEN: LazyLock<Mutex<BTreeMap<String, String>>> =
+        LazyLock::new(|| Mutex::new(BTreeMap::new()));
+    if let Some(tag) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(&image.id) {
+        return Ok(tag.clone());
+    }
+
+    let out = Command::new(cli)
+        .args(["run", "--rm", "--network", "none", "--entrypoint", "/bin/sh", &image.id])
+        .args([
+            "-c",
+            "python3 -c \"import sysconfig;print(sysconfig.get_config_var('SOABI') or 'none')\"",
+        ])
+        .output()
+        .map_err(|e| format!("{}: {e}", cli.display()))?;
+    let tag = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || tag.is_empty() {
+        return Err(format!(
+            "{engine}: {} has no usable python3 ({}). A runner image needs one for \
+             [deps] to mean anything; pass --image to name another.",
+            image.reference,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    SEEN.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(image.id.clone(), tag.clone());
+    Ok(tag)
+}
 
 /// The ABI tag of [`INTERPRETER`], read once per process.
 ///
@@ -276,8 +378,8 @@ pub fn digest(python: &[String]) -> String {
 }
 
 /// Host directory holding a warmed set, whether or not it exists yet.
-pub fn set_path(python: &[String]) -> Result<PathBuf, String> {
-    Ok(cache_dir()?.join("sets").join(abi()?).join(digest(python)))
+pub fn set_path(python: &[String], runtime: Runtime) -> Result<PathBuf, String> {
+    Ok(cache_dir()?.join("sets").join(runtime.key()?).join(digest(python)))
 }
 
 /// The warmed set a declaration needs, or `None` when it declares no packages.
@@ -286,17 +388,21 @@ pub fn set_path(python: &[String]) -> Result<PathBuf, String> {
 /// is not there fails as `CheckBroken`, which reads as a broken grader and sends the
 /// author to debug a script that is fine. Naming the missing set and the command that
 /// fills it is the whole difference between a five-second fix and an afternoon.
-pub fn require(deps: &Deps) -> Result<Option<PathBuf>, String> {
+///
+/// The runtime is named in the refusal because it is the likely surprise: a set warmed
+/// for the machine's Python is not a set for the runner image's, and the two live in
+/// different directories on purpose.
+pub fn require(deps: &Deps, runtime: Runtime) -> Result<Option<PathBuf>, String> {
     if deps.python.is_empty() {
         return Ok(None);
     }
     check(deps)?;
-    let path = set_path(&deps.python)?;
+    let path = set_path(&deps.python, runtime)?;
     if !path.is_dir() {
         return Err(format!(
             "dependencies are declared but not warmed for {} - run `benkyou warm <exercise-dir>`\n  \
              wanted: {}\n  expected at: {}",
-            abi()?,
+            runtime.describe()?,
             deps.python.join(", "),
             path.display()
         ));
@@ -364,7 +470,8 @@ pub fn resolved(set: &Path) -> Result<Vec<String>, String> {
 pub struct Warmed {
     pub python: Vec<String>,
     pub path: PathBuf,
-    pub abi: String,
+    /// The runtime the set was built for: an ABI tag for the host, or the image key.
+    pub runtime: String,
     /// Everything on disk in the set, transitive dependencies included.
     pub resolved: Vec<String>,
     /// False when the set was already present and nothing was fetched.
@@ -373,20 +480,24 @@ pub struct Warmed {
 
 /// Install a declaration's packages into the cache.
 ///
-/// The only command in this tool that uses a network, and it runs on the host without a
-/// sandbox, deliberately: `uv` needs DNS and an index, and wrapping that in isolation
-/// would be theatre. What it must never do is execute anything from the exercise. The
-/// package list comes from `task.toml`, which is parsed and then validated by
-/// [`check`] - discovering dependencies by importing a generated script would put that
-/// script on the network, which is the one thing all of this exists to prevent, and
-/// building an sdist would run its `setup.py` here.
-pub fn warm(deps: &Deps, force: bool) -> Result<Option<Warmed>, String> {
+/// The only command in this tool that uses a network. Where it *runs* depends on where
+/// the packages will be imported: `uv` on the host for a host runtime, `pip` inside the
+/// image for a container one. Warming somewhere other than the runtime that will import
+/// the result is the original sin this module exists to prevent — wheels are built for
+/// an ABI, and the set is only as good as the interpreter it was resolved against.
+///
+/// Either way it must never execute anything from the exercise. The package list comes
+/// from `task.toml`, which is parsed and then validated by [`check`] - discovering
+/// dependencies by importing a generated script would put that script on the network,
+/// which is the one thing all of this exists to prevent, and building an sdist would run
+/// its `setup.py` here.
+pub fn warm(deps: &Deps, force: bool, runtime: Runtime) -> Result<Option<Warmed>, String> {
     if deps.python.is_empty() {
         return Ok(None);
     }
     check(deps)?;
-    let abi = abi()?.to_string();
-    let path = set_path(&deps.python)?;
+    let key = runtime.key()?;
+    let path = set_path(&deps.python, runtime)?;
     // A present set with a readable manifest is done. One without is treated as absent:
     // `warm` is the command that repairs this, so refusing here would leave no way out.
     if path.is_dir() && !force {
@@ -394,14 +505,13 @@ pub fn warm(deps: &Deps, force: bool) -> Result<Option<Warmed>, String> {
             return Ok(Some(Warmed {
                 python: deps.python.clone(),
                 path,
-                abi,
+                runtime: key,
                 resolved,
                 fetched: false,
             }));
         }
     }
 
-    let uv = which_uv()?;
     // Built beside the destination and renamed, so an interrupted warm cannot leave a
     // half-installed set that later runs would bind and trust. Same reason the gate
     // writes `.gate.json` through a temp name.
@@ -409,21 +519,17 @@ pub fn warm(deps: &Deps, force: bool) -> Result<Option<Warmed>, String> {
     fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     let staging = parent.join(format!(".tmp-{}", std::process::id()));
     let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
 
-    let mut cmd = Command::new(&uv);
-    cmd.args(["pip", "install", "--only-binary", ":all:", "--python", INTERPRETER, "--target"])
-        .arg(&staging)
-        .args(&deps.python);
-    let out = cmd.output().map_err(|e| format!("{}: {e}", uv.display()))?;
-    if !out.status.success() {
+    let out = match runtime {
+        Runtime::Host => install_on_host(&deps.python, &staging),
+        Runtime::Image { cli, engine, image } => {
+            install_in_image(cli, engine, image, &deps.python, &staging)
+        }
+    };
+    if let Err(e) = out {
         let _ = fs::remove_dir_all(&staging);
-        let err = String::from_utf8_lossy(&out.stderr);
-        let tail: Vec<&str> = err.lines().rev().take(6).collect();
-        return Err(format!(
-            "warming failed: {}\n{}",
-            deps.python.join(", "),
-            tail.into_iter().rev().collect::<Vec<_>>().join("\n")
-        ));
+        return Err(e);
     }
 
     // Written before the rename, so a set that exists is a set whose manifest exists.
@@ -437,7 +543,95 @@ pub fn warm(deps: &Deps, force: bool) -> Result<Option<Warmed>, String> {
     // has anything in it. Removing first is what makes `warm` the repair command.
     let _ = fs::remove_dir_all(&path);
     fs::rename(&staging, &path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Some(Warmed { python: deps.python.clone(), path, abi, resolved, fetched: true }))
+    Ok(Some(Warmed {
+        python: deps.python.clone(),
+        path,
+        runtime: key,
+        resolved,
+        fetched: true,
+    }))
+}
+
+/// The host path: `uv`, pinned to the interpreter the job will run.
+fn install_on_host(specs: &[String], staging: &Path) -> Result<(), String> {
+    let uv = which_uv()?;
+    let mut cmd = Command::new(&uv);
+    cmd.args(["pip", "install", "--only-binary", ":all:", "--python", INTERPRETER, "--target"])
+        .arg(staging)
+        .args(specs);
+    let out = cmd.output().map_err(|e| format!("{}: {e}", uv.display()))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(warming_failed(specs, &String::from_utf8_lossy(&out.stderr)))
+}
+
+/// The container path: `pip` inside the image, writing into a bound staging directory.
+///
+/// `pip` rather than `uv` because the image is the runtime and a runner image is not
+/// required to carry `uv`; every image with a Python has `pip`. The install runs *with*
+/// a network and with nothing else: no host filesystem beyond the staging directory, a
+/// read-only root, no capabilities, and `--user` set so the wheels that land belong to
+/// the caller rather than to root — a root-owned cache is one no later run could read
+/// and no `warm --force` could repair.
+///
+/// `--only-binary=:all:` carries the same weight it does on the host: no sdist, so
+/// nothing in the dependency tree gets to run a `setup.py`, here or anywhere.
+fn install_in_image(
+    cli: &Path,
+    engine: &str,
+    image: &crate::run::Image,
+    specs: &[String],
+    staging: &Path,
+) -> Result<(), String> {
+    let (uid, gid) = crate::run::uid_gid()?;
+    let script = format!(
+        "python3 -m pip install --only-binary=:all: --no-input --no-cache-dir \
+         --disable-pip-version-check --target /out {}",
+        specs.join(" ")
+    );
+
+    let out = Command::new(cli)
+        .args(["run", "--rm", "--read-only"])
+        .args(["--cap-drop", "ALL", "--security-opt", "no-new-privileges"])
+        .args(["--user".to_string(), format!("{uid}:{gid}")])
+        .args([
+            "--tmpfs".to_string(),
+            format!("/tmp:rw,mode=1777,size={}", crate::run::TMP_BYTES),
+        ])
+        .args(["--env", "HOME=/tmp", "--env", "TMPDIR=/tmp"])
+        .args([
+            "--mount".to_string(),
+            format!("type=bind,source={},target=/out", staging.display()),
+        ])
+        .args(["--entrypoint", "/bin/sh", &image.id, "-c", &script])
+        .output()
+        .map_err(|e| format!("{}: {e}", cli.display()))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    // Both streams: pip reports resolution failures on stdout and process failures on
+    // stderr, and "no matching distribution" is the common one and lands on stdout.
+    let both = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Err(format!(
+        "{}\n  in {engine} image {}",
+        warming_failed(specs, &both),
+        image.reference
+    ))
+}
+
+/// The last few lines of an installer's complaint, which is where the reason is.
+fn warming_failed(specs: &[String], err: &str) -> String {
+    let tail: Vec<&str> = err.lines().filter(|l| !l.trim().is_empty()).rev().take(6).collect();
+    format!(
+        "warming failed: {}\n{}",
+        specs.join(", "),
+        tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+    )
 }
 
 fn which_uv() -> Result<PathBuf, String> {
@@ -568,14 +762,14 @@ mod tests {
     /// The validator guards the network command, so it has to run before it, not after.
     #[test]
     fn warming_refuses_a_bad_spec_without_touching_the_network() {
-        let err = warm(&deps(&["git+https://example.invalid/x"]), false).unwrap_err();
+        let err = warm(&deps(&["git+https://example.invalid/x"]), false, Runtime::Host).unwrap_err();
         assert!(err.contains("git+https://example.invalid/x"), "must name the spec: {err}");
         assert!(err.contains("Registry names only"), "must say what is allowed: {err}");
     }
 
     #[test]
     fn requiring_refuses_a_bad_spec_too() {
-        let err = require(&deps(&["-e ."])).unwrap_err();
+        let err = require(&deps(&["-e ."]), Runtime::Host).unwrap_err();
         assert!(err.contains("flag"), "{err}");
     }
 
@@ -615,8 +809,8 @@ mod tests {
     #[test]
     fn an_empty_declaration_needs_nothing() {
         let none = Deps::default();
-        assert!(require(&none).expect("no deps is not an error").is_none());
-        assert!(warm(&none, false).expect("nothing to warm").is_none());
+        assert!(require(&none, Runtime::Host).expect("no deps is not an error").is_none());
+        assert!(warm(&none, false, Runtime::Host).expect("nothing to warm").is_none());
     }
 
     // -- the manifest is the set's identity --------------------------------

@@ -618,7 +618,7 @@ the workspace, a loop that fills a disk, a process tree that will not die, a scr
 that reads a credential file because it was in the training data. A warning printed
 before the fact contains none of them.
 
-So there is one execution interface and two backends behind it. A caller builds a job —
+So there is one execution interface and three backends behind it. A caller builds a job —
 a run directory, a list of children it may see and whether each is writable, a working
 directory, a script, a deadline — and hands it over. Every execution in the tool goes
 this way: both gate directions, the advisory `run_cmd`, `grade`, and the browser's Run
@@ -631,68 +631,82 @@ job's view of the filesystem is the list it was given and the read-only runtime.
 Nothing else is there — not the exercise directory, not the study state, not the user's
 home.
 
+**Container** is the second isolating backend, reached through `docker` or `podman`, and
+it exists because bubblewrap is Linux. `--network none`, a read-only rootfs, `--cap-drop
+ALL` with `no-new-privileges`, `--pids-limit`, a memory ceiling with swap pinned to it,
+bind mounts for exactly the view, three owned tmpfs mounts for `/box`, `$HOME` and a
+bounded `/tmp`, and the same synthetic `/etc/passwd`. `--user` is the caller's own uid,
+without which a rootful daemon fills the learner's workspace with root-owned files.
+
+Selection is ordered, not negotiated: sandbox where there is one, container where there
+is not, and `--container` to ask for it anyway on a machine with both — which is how a
+Linux author gates against the runtime a mac will use. `--unsafe-host` remains the only
+thing that turns isolation off, and remains reachable only by that name.
+
 **UnsafeHost** is the escape hatch, reachable only by passing `--unsafe-host`. It runs
 as the user, with the user's rights, over the whole filesystem. There is no prompt:
 `gate` runs unattended inside a generation loop, so consent has to be expressible as a
 flag. The name is the documentation, which is why it is not called `native` or
 `direct`.
 
-A missing sandbox is a refusal, not a downgrade. Claiming isolation while only changing
-the working directory is worse than not having it, because then the warnings stop being
-read.
+Isolation missing is a refusal, never a downgrade. Where there is no sandbox there may be
+a container; where there is neither, the command stops and both refusals are printed,
+because on Linux the reader wants to know bubblewrap was looked for and on a mac the first
+line is what explains why containers are being discussed at all. Claiming isolation while
+only changing the working directory would be worse than having none, because then the
+warnings stop being read.
 
-The sandbox is therefore Linux, and the refusal follows the host to another operating
-system. Bubblewrap isolates with Linux namespaces; on macOS there is no equivalent to
-install, so `gate`, `attempt`, `grade` and `serve` refuse there and the error says which
-of the two failures it is rather than sending the reader after a package that cannot
-exist. Everything else — the graph, the assessment, the schedule, the orders, the cards —
-is file work and portable. That split is usable rather than merely honest: the executing
-half wants the goals, the fluency file and the bank beside it, which is the same
-arrangement the environment fingerprint already forces, since a verdict earned on one
-machine is refused on another.
+**The image is the interesting part, and it is not a workaround.** Bubblewrap bind-mounts
+the host's `/usr`, so a sandbox verdict is silent about which interpreter earned it — the
+gap the environment fingerprint above admits it cannot close. A container replaces `/usr`
+with a pinned image, which makes the same question answerable, so a verdict records the
+resolved image id and a different one is a *refusal* rather than a warning. One
+manifest-list digest resolves to different bytes on every architecture, so that check
+also catches an arm64 verdict being read on an amd64 machine — an improvement on `Env`,
+which can only mention it.
 
-A container backend — Docker or Podman in place of the missing namespaces — is the
-obvious next backend and is deliberately not here. It is not the sandboxing that stops
-it. An image is a *second* `/usr`, and two things are keyed to the first one: the
-environment fingerprint a verdict carries, and the warm cache, whose key includes the
-interpreter's ABI and whose wheels are installed by the host's `uv` against the host's
-Python. Run the same exercise under an image with a different interpreter and the
-read-only dependency directory is bytes that interpreter cannot load — an
-import error reported as `CheckBroken`, which the skill teaches is always the author's
-bug. Fixing that means the image, its interpreter and the warm cache become one keyed
-unit, and pulling an image is a network dependency on a path that has exactly one
-network command today. That is a feature with its own design, not a third arm of this
-one.
+Two consequences, both taken rather than dodged. First, the warm cache is keyed by the
+runtime: an ABI tag alone for the host, and image id plus architecture plus that image's
+ABI for a container. Wheels are built for an interpreter, and warming for one runtime
+while importing in another is a `ModuleNotFoundError` inside a package that is plainly
+installed — reported as `CheckBroken`, which the skill teaches is always the author's bug.
+So warming for a container runs `pip` *inside* that image, with a network and nothing
+else, writing into a bound staging directory as the caller.
 
-macOS does have a sandbox, and the reason it is not this one is worth writing down
-because "there is nothing on a mac" is the wrong summary. Seatbelt, reached through
-`sandbox-exec`, is a *policy filter* where bubblewrap is a *namespace constructor*, and
-the difference lands unevenly across what the isolation policy above actually promises.
-It denies the network outright, and a `(deny default)` profile with explicit read
-allowances covers the view well enough that the gate's reference run still could not
-read `check/`. It has no answer at all for three: there is no PID namespace, so the
-deadline is back to a process group and a fork bomb is uncapped for the same reason
-`RLIMIT_NPROC` is skipped on the host; there is no bounded tmpfs, so a runaway writes
-to the real disk; and without bind mounts there is no synthetic `/etc/passwd` and no
-`/box`, so the choice is the host's account list or a failing `getpwuid`, and the run
-directory's real path leaks into whatever a grader prints. The three it cannot do are
-the containment for a mistaken generator, which is the failure this section opened by
-calling a certainty. `sandbox-exec` and the `sandbox_init*` family are also deprecated
-and SBPL is undocumented for third-party use; Chromium still runs on it and says as
-much in its own source.
+Second, an image has to arrive from somewhere, and a network on the gating path is what
+this whole mechanism exists to prevent. `gate`, `attempt`, `grade` and `serve` resolve the
+image locally and refuse if it is absent; `benkyou runner --pull` is the one command that
+fetches, joining `warm` as the second and last place a network appears.
 
-So a Seatbelt backend is buildable and would be a *third tier*, not a second
-implementation of the first. It would have to say so: its own `Backend` variant and its
-own `profile()` string, never folded into `Sandbox`. Otherwise "passed under the
-sandbox" means two different things depending on which machine ran it, and because a
-verdict is already refused on any other machine, nobody would ever see the tier change
-underneath them. Note also that the container route on a mac is a Linux VM, so it
-replaces `/usr` regardless: it does not avoid the keying problem above, it guarantees it.
+What a container does not inherit is `--die-with-parent`. Killing the engine's client
+leaves the container running, because the daemon owns it and never noticed the client
+leave — so the deadline stops the container by name first and reaps the process group
+afterwards, and every run carries a label naming the pid that owns it so the next
+detection can kill the ones whose owner is gone.
 
-The two backends differ in isolation and deliberately in nothing else: same environment
-allowlist, same limits, same relative layout. When an exercise passes under one and
-fails under the other, the difference is isolation, and the search does not also have to
-cover a stray `PYTHONPATH`.
+`RLIMIT_NPROC` does not travel either. A container shares the host's uid, so `ulimit -u`
+would count the whole logged-in session exactly as it does on the host: the cap is
+`--pids-limit`, a cgroup on the container, and the prelude's process limit is applied only
+where a namespace makes it mean something.
+
+macOS does have a sandbox of its own, and not using it is a decision rather than an
+oversight. Seatbelt, reached through `sandbox-exec`, is a *policy filter* where bubblewrap
+is a *namespace constructor*. It denies the network outright and a `(deny default)`
+profile covers the view well enough that the gate's reference run could not read
+`check/`. It has no answer for three: no PID namespace, so the deadline is back to a
+process group; no bounded tmpfs, so a runaway writes to the real disk; and without bind
+mounts no synthetic `/etc/passwd` and no `/box`, so the choice is the host's account list
+or a failing `getpwuid`, and the run directory's real path leaks into whatever a grader
+prints. Those three are the containment for a mistaken generator, which is the failure
+this section opened by calling a certainty. `sandbox-exec` and the `sandbox_init*` family
+are also deprecated and SBPL is undocumented for third-party use. A container gets all
+three, on the same machine, through an interface that is supported — so the container
+backend is the mac answer and Seatbelt is not.
+
+The backends differ in isolation and in the runtime, and deliberately in nothing else:
+same environment allowlist, same limits, same relative layout, same `/box`. When an
+exercise passes under one and fails under another, the difference is one of those two,
+and the search does not also have to cover a stray `PYTHONPATH`.
 
 Two things fall out of the view mechanism rather than being asked for. The gate's
 reference solution no longer sees `check/`, so a `solve.sh` cannot pass the first
@@ -700,20 +714,29 @@ direction by reading the tests it is supposed to be independent of. And a grader
 reach the exercise directory it was copied from, which retires a whole class of
 mid-gate corruption that the digest could previously only detect after the fact.
 
-What the sandbox does *not* give: reproducibility. `/usr` is bind-mounted from the host,
-so the interpreter and its packages are the host's. A verdict is not portable to another
-machine and never claimed to be — see the environment fingerprint above.
+What the *sandbox* does not give: reproducibility. `/usr` is bind-mounted from the host,
+so the interpreter and its packages are the host's, and a verdict is not portable to
+another machine — see the environment fingerprint above. The container backend is the
+exception and the reason it earns its complexity: the runtime is a digest, recorded, and
+enforced on every later read. What still does not travel is the *host* half of a
+container run — the engine, the kernel, the architecture — so a verdict remains local
+evidence there too, just for a shorter list of reasons.
 
 One limit is namespace-only. `RLIMIT_NPROC` counts processes per user, not per tree, so
-on the host it is measured against the whole logged-in session: set below it nothing
-forks, set above it a fork bomb still has headroom. It needs a namespace to mean
-anything, and it is applied only where there is one.
+outside a user namespace it is measured against the whole logged-in session: set below it
+nothing forks, set above it a fork bomb still has headroom. It is applied under the
+sandbox and nowhere else. The container backend caps the container instead, with
+`--pids-limit`, which is the same guarantee arrived at through a cgroup rather than an
+rlimit; the host backend has no equivalent and says so.
 
 The wall-clock deadline predates all of this and still matters most. An infinite loop in
 a draft solution is an ordinary mistake and the gate has to report it as one rather than
 hanging. Killing only the shell is not enough — a backgrounded grandchild keeps the
 output pipes open, and reading them to end then never returns. Under the sandbox the PID
-namespace makes this total; on the host the process group is all there is.
+namespace makes this total; on the host the process group is all there is; under a
+container the process group is not even enough, because it reaches the engine's client
+and not the container the daemon is running, which is why that backend kills by name
+first and only then collects the group.
 
 ### The browser runner
 
@@ -795,11 +818,18 @@ sandbox needs one read-only bind and an env var. A venv is the wrong shape for t
 reason it looks right: it records absolute paths in `pyvenv.cfg` and in every console
 script, so one built at a cache path and bound elsewhere is subtly broken.
 
-**Keyed by the interpreter's ABI, not just the packages.** `uv` will install a
-`cpython-313` wheel for a sandbox running 3.14, and the failure is a
-`ModuleNotFoundError` four frames inside numpy that names nothing relevant. Warming pins
-`--python` to the interpreter the sandbox mounts, and `SOABI` is part of the set's path,
-so an interpreter upgrade misses the cache and says so.
+**Keyed by the runtime, not just the packages.** `uv` will install a `cpython-313` wheel
+for a sandbox running 3.14, and the failure is a `ModuleNotFoundError` four frames inside
+numpy that names nothing relevant. Warming pins `--python` to the interpreter the sandbox
+mounts, and `SOABI` is part of the set's path, so an interpreter upgrade misses the cache
+and says so.
+
+A container is a second runtime and gets a second key: the image id, the architecture it
+resolved to, and that image's own `SOABI`, read from inside the image rather than guessed
+from its tag. Warming for it runs `pip` in that image — `pip` and not `uv`, because a
+runner image is not required to carry `uv` and every image with a Python has `pip`. The
+host key stays the bare ABI tag, so sets already on disk are not orphaned by the arrival
+of a backend they have nothing to do with.
 
 **Exact pins, enforced.** A set is keyed by its requirement list. `pandas` would name one
 directory on Monday and different bytes in a month: a stable key over changing content,

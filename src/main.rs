@@ -16,7 +16,7 @@ use benkyou::bank;
 use benkyou::assess::{self, AssessConfig, RecordOutcome, Step};
 use benkyou::exercise::{self, GateOutcome, Task};
 use benkyou::gate::run_gate;
-use benkyou::run::Backend;
+use benkyou::run::{Backend, Want};
 use benkyou::graph::{
     Edge, EdgeType, Goal, Graph, Kind, Node, Provenance, State, Verdict, NODE_CAP, RELEVANCE_FLOOR,
 };
@@ -126,18 +126,29 @@ USAGE
 
   benkyou warm <exercise-dir> [--force]
       Install the packages an exercise declares in [deps] so its scripts can
-      import them. The only command here that uses a network, and the only
+      import them. One of two commands here that use a network, and the only
       reason it exists: runs have none, so a `pip install` at grade time fails
       and a PEP 723 header resolves against nothing. Warming happens once, on
       purpose, before gating; every later run binds the result read-only.
-      Sets are keyed by the package list and by the interpreter's ABI, so an
-      interpreter upgrade re-warms rather than loading wheels it cannot load.
+      Sets are keyed by the package list and by the runtime that will import
+      them - the machine's interpreter ABI under the sandbox, or the runner
+      image, its architecture and its ABI under a container - so a set is never
+      loaded by an interpreter it was not built for. Warming for a container
+      runs `pip` inside that image, for the same reason.
       Every requirement must be a registry name pinned to one exact version
       (`pandas==3.0.5`); a bare name or a range is refused, because the cache
       key is a digest of the list and would otherwise name changing bytes.
       Only wheels are installed: a URL, a path, an editable, or a package that
       has to be built would run code on your machine out of a generated file.
       --force refetches, and repairs a set whose manifest is missing.
+
+  benkyou runner [--pull] [--image REF]
+      Report the container engine and the runner image, and fetch the image with
+      --pull. The other command that uses a network, and the only one that
+      fetches an image: gate, attempt, grade and serve resolve what is already
+      local and refuse otherwise, so a runtime is never downloaded in the middle
+      of a verdict. Exits non-zero when the image is absent, after printing what
+      is missing.
 
   benkyou attempt <exercise-dir> [--work <dir>]
       Materialise a workspace and sit down to the exercise. Refuses anything the
@@ -171,22 +182,35 @@ FILES
   Pass --work to override.
 
 EXECUTION
-  `gate`, `attempt`, `grade` and `serve` run generated scripts in a sandbox: no
-  network, no host filesystem beyond a read-only /usr, no access to your goals or
-  workspaces, a throwaway HOME, a scrubbed environment, and resource ceilings. It
-  needs `bwrap` (bubblewrap). Without it these commands refuse rather than run
-  unprotected.
+  `gate`, `attempt`, `grade` and `serve` run generated scripts isolated: no network, no
+  host filesystem beyond a read-only runtime, no access to your goals or workspaces, a
+  throwaway HOME, a scrubbed environment, and resource ceilings. Two backends provide
+  that, and one of them is chosen for you.
 
-  That makes the four of them Linux-only: bubblewrap isolates with Linux namespaces,
-  and there is no equivalent to install on macOS or any other Unix. Everything else
-  here - the graph, the assessment, the schedule, the orders, the cards - is plain
-  file work and runs anywhere. Split the two across machines if you have to: the
-  goals, the fluency file and the exercise bank belong on whichever host executes,
-  since a verdict earned on one machine is refused on another anyway.
+  sandbox    `bwrap` (bubblewrap), and the default wherever it works. Linux only:
+             it isolates with Linux namespaces. The runtime is the machine's own
+             read-only /usr, so a verdict says nothing about which interpreter
+             earned it.
+  container  `docker` or `podman`, used when there is no sandbox — which is what a
+             mac has. The runtime is a pinned image instead of your /usr, so a
+             verdict names it exactly and is refused under any other image. Needs
+             the image fetched once with `benkyou runner --pull`; nothing on this
+             path ever reaches a network by itself.
 
-  --unsafe-host turns the sandbox off for one invocation. Generated scripts then run
+  --container asks for the container backend on a machine that also has a sandbox,
+  which is how you gate against the runtime a mac will use. --image REF, or
+  $BENKYOU_RUNNER_IMAGE, names a different image: the default carries python3 and
+  the usual shell tools and nothing else, so an exercise needing `sqlite3` needs its
+  own. Warm dependencies against the same backend you will gate with; the cache is
+  keyed by the runtime and a set built for one is not a set for the other.
+
+  Everything outside those four commands - the graph, the assessment, the schedule,
+  the orders, the cards - is plain file work and runs anywhere, with or without
+  either backend.
+
+  --unsafe-host turns isolation off for one invocation. Generated scripts then run
   as you, over your whole filesystem. A gate verdict records which backend earned it
-  and the other backend refuses it, so this is a choice you keep making rather than
+  and every other backend refuses it, so this is a choice you keep making rather than
   one you make once.
 
 Every command prints JSON on success unless stated otherwise.
@@ -223,20 +247,37 @@ fn warn_drift(dir: &std::path::Path, backend: &Backend) {
 /// Choose the execution backend for this invocation.
 ///
 /// Sandboxed unless the caller says otherwise in as many words. The absence of a
-/// sandbox is an error and not a silent downgrade: every script this tool runs was
-/// written by a model or by a learner, and the difference between running one in a
-/// container and running one as the user is the difference the caller has to consent
-/// to. No prompt, because `gate` runs unattended in the middle of a generation loop —
-/// a flag or nothing.
+/// sandbox is a container or an error, never a silent downgrade: every script this tool
+/// runs was written by a model or by a learner, and the difference between running one
+/// isolated and running one as the user is the difference the caller has to consent to.
+/// No prompt, because `gate` runs unattended in the middle of a generation loop — a flag
+/// or nothing.
 fn backend(args: &[String]) -> Result<Backend, String> {
-    let unsafe_host = args.iter().any(|a| a == "--unsafe-host");
-    if unsafe_host {
+    let want = if args.iter().any(|a| a == "--unsafe-host") {
         eprintln!(
             "benkyou: --unsafe-host: running generated scripts with your own user's \
              rights, outside any sandbox"
         );
-    }
-    Backend::select(unsafe_host)
+        Want::UnsafeHost
+    } else if args.iter().any(|a| a == "--container") {
+        Want::Container
+    } else {
+        Want::Auto
+    };
+    Backend::choose(want, runner_image(args).as_deref())
+}
+
+/// Which runtime a container job runs in: `--image`, then `$BENKYOU_RUNNER_IMAGE`, then
+/// the pinned default.
+///
+/// An environment variable as well as a flag because it is a property of the machine
+/// rather than of the command: a reader whose exercises need a `sqlite3` the default
+/// image lacks sets it once, and every later `gate` and `grade` agrees with the `warm`
+/// that filled the cache. An exported-but-empty value counts as unset.
+fn runner_image(args: &[String]) -> Option<String> {
+    flag(args, "--image")
+        .or_else(|| std::env::var("BENKYOU_RUNNER_IMAGE").ok())
+        .filter(|s| !s.trim().is_empty())
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
@@ -249,8 +290,16 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 /// Flags that take no value. Without this list `positional` eats the argument after
 /// a boolean flag, so `cards --push cards.json` loses the file — the flag consumes
 /// it and the command reports a missing argument for something plainly there.
-const VALUELESS: &[&str] =
-    &["--help", "--version", "--push", "--no-open", "--unsafe-host", "--force"];
+const VALUELESS: &[&str] = &[
+    "--help",
+    "--version",
+    "--push",
+    "--no-open",
+    "--unsafe-host",
+    "--container",
+    "--pull",
+    "--force",
+];
 
 fn positional(args: &[String]) -> Vec<&String> {
     let mut out = Vec::new();
@@ -902,14 +951,21 @@ fn run(args: &[String]) -> Result<String, String> {
             let dir = need_exercise(0)?;
             let task = exercise::load(&dir)?;
             let force = args.iter().any(|a| a == "--force");
-            match benkyou::deps::warm(&task.deps, force)? {
+            // Warming needs to know which runtime will import the result, so it selects
+            // a backend exactly as `gate` does. A set built against the machine's Python
+            // is not a set for the runner image's, and the failure if they diverge is an
+            // import error inside a package that is plainly installed.
+            let backend = backend(args)?;
+            let runtime = benkyou::deps::Runtime::of(&backend);
+            match benkyou::deps::warm(&task.deps, force, runtime)? {
                 None => json(&serde_json::json!({
                     "warmed": [],
                     "note": "no [deps] declared - nothing to warm",
                 })),
                 Some(w) => json(&serde_json::json!({
                     "warmed": w.python,
-                    "abi": w.abi,
+                    "runtime": w.runtime,
+                    "backend": backend.name(),
                     "path": w.path,
                     "fetched": w.fetched,
                     // The whole tree, not just what was asked for: an exact pin fixes
@@ -918,6 +974,42 @@ fn run(args: &[String]) -> Result<String, String> {
                     "resolved": w.resolved,
                 })),
             }
+        }
+
+        // Where the container backend's one network step lives. Reporting and fetching
+        // are the same command because the answer to "is the runtime here?" is the thing
+        // a reader needs before either gating or pulling.
+        "runner" => {
+            let pull = args.iter().any(|a| a == "--pull");
+            let status = benkyou::run::runner_status(runner_image(args).as_deref(), pull)?;
+            let body = match &status.image {
+                Some(image) => serde_json::json!({
+                    "engine": status.engine,
+                    "engine_version": status.version,
+                    "image": image.reference,
+                    "id": image.id,
+                    "arch": image.arch,
+                    "present": true,
+                    "pulled": status.pulled,
+                }),
+                None => serde_json::json!({
+                    "engine": status.engine,
+                    "engine_version": status.version,
+                    "image": status.reference,
+                    "present": false,
+                    "pulled": status.pulled,
+                    "hint": "run `benkyou runner --pull` to fetch it",
+                }),
+            };
+            let text = json(&body)?;
+            if status.image.is_none() {
+                // The one command that can report an absent runtime without failing is
+                // still not going to pretend it found one: print the report, then exit
+                // non-zero so a script that gates next stops here.
+                println!("{text}");
+                return Err(format!("runner image not present: {}", status.reference));
+            }
+            Ok(text)
         }
 
         "attempt" => {

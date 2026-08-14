@@ -34,12 +34,15 @@ no graph editor, no visualiser, and no knowledge tracing.
 ## Requirements
 
 - Rust (2021), and a Unix system with `/bin/sh`
-- Linux, for the commands that run a script. `bubblewrap` (`bwrap`) is the sandbox, and
-  it isolates with Linux namespaces. `gate`, `attempt`, `grade` and `serve` need it and
-  refuse without it. macOS builds and runs everything else: the graph, the assessment,
-  the schedule, the orders and the cards are plain file work.
+- Isolation, for the four commands that run a script. `bubblewrap` (`bwrap`) is the
+  default wherever it works, which is Linux only: it isolates with Linux namespaces.
+  `docker` or `podman` is the other way, and the one a mac gets, so macOS runs the whole
+  loop and not half of it. `gate`, `attempt`, `grade` and `serve` refuse when there is
+  neither. Everything else — the graph, the assessment, the schedule, the orders and the
+  cards — is plain file work and needs no backend at all.
 - Anki with AnkiConnect, for `cards --push` only
-- `uv`, for `benkyou warm` only
+- `uv`, for `benkyou warm` under the sandbox; warming for a container uses the `pip`
+  inside the image instead
 - The programs that your own exercises call
 
 A grader is a shell script that you write. It runs with no network, so it can use only
@@ -53,34 +56,79 @@ exact version:
 python = ["pandas==3.0.5"]
 ```
 
-Then run `benkyou warm <exercise-dir>` once. That installs the packages and is the only
-command here that uses a network. Every later run reads them from a read-only copy, so
-grading still runs with no network at all. `gate`, `attempt`, `grade` and `serve` refuse
-an exercise whose packages are not warmed yet, and tell you which ones.
+Then run `benkyou warm <exercise-dir>` once. That installs the packages, and is one of
+the two commands here that use a network — `benkyou runner --pull` is the other. Every
+later run reads them from a read-only copy, so grading still runs with no network at all.
+`gate`, `attempt`, `grade` and `serve` refuse an exercise whose packages are not warmed
+yet, and tell you which ones.
+
+A warmed set is keyed by the runtime that will import it, so warming and gating must
+agree on the backend. The host set is keyed by the interpreter's ABI tag; a container set
+by the image id, the architecture it resolved to, and that image's own ABI.
+`benkyou warm <exercise-dir> --container` warms the container set. Warm one runtime and
+gate under the other and the package is plainly installed and still not importable.
 
 Only names with an exact version are accepted, and only pre-built wheels. A bare name
 or a version range is refused, so the same declaration always means the same packages.
-A URL, a file path or a
-package that must be built are all refused, because warming runs on your machine with
-your own rights and the list comes from a generated file.
+A URL, a file path or a package that must be built are all refused, because the list comes
+from a generated file. Warming for the sandbox runs on your machine with your own rights,
+so a build step there is arbitrary code. Warming for a container is confined to the image
+and a staging directory, and the rule stays: nobody read the list either way.
 
-`gate`, `attempt`, `grade` and `serve` run generated scripts in a sandbox. There is no
-network, no access to your files, and no access to your study state. The default needs
-`bubblewrap`. Without it the tool stops and tells you so.
+`gate`, `attempt`, `grade` and `serve` run generated scripts isolated. There is no
+network, no access to your files, and no access to your study state. Missing isolation is
+a refusal and never a downgrade: with neither backend present the tool stops and names
+both of the things it looked for.
 
-CAUTION: `--unsafe-host` turns the sandbox off. The scripts then run with your own user
-permissions, over your whole filesystem. Read a generated `check/check.sh` and
-`solution/solve.sh` before you use that flag.
+CAUTION: `--unsafe-host` turns isolation off, whichever backend would have provided it.
+The scripts then run with your own user permissions, over your whole filesystem. Read a
+generated `check/check.sh` and `solution/solve.sh` before you use that flag.
 
 ```sh
 cargo build --release   # target/release/benkyou
 cargo test
 ```
 
+### Which backend runs your code
+
+Selection is ordered and not negotiated: the sandbox where there is one, a container
+where there is not, `--unsafe-host` only when you name it. A mac therefore lands on
+`docker` or `podman` without being asked. `--container` asks for a container on a machine
+that also has `bubblewrap`, which is how a Linux author gates against the runtime a mac
+will use.
+
+The runtime is what separates the two. The sandbox binds your own read-only `/usr`, so a
+verdict is silent about which interpreter earned it. A container replaces `/usr` with an
+image pinned by digest, which makes that question answerable, so `.gate.json` records the
+resolved image id and `attempt`, `grade` and `serve` refuse the exercise under any other
+image, naming both and telling you to gate again. A newer engine version only warns.
+
+`--image REF`, or `$BENKYOU_RUNNER_IMAGE`, names a different image. The default carries
+python3, `pip` and the usual shell tools and nothing else, so an exercise whose grader
+calls `sqlite3` needs one of its own. A run gets that image, no network, no capabilities,
+a read-only root, and your own uid — so what it writes into the workspace belongs to you
+and not to root.
+
+`benkyou runner` reports the engine, its version, the image and whether the image is
+present, and exits non-zero when it is not. `--pull` fetches it, and is the only place
+here that fetches an image at all: `gate`, `attempt`, `grade` and `serve` resolve it
+locally and refuse when it is absent, so a runtime is never downloaded in the middle of a
+verdict.
+
+```sh
+benkyou runner --pull            # once, before the first container run
+benkyou gate ./exercises/foo     # on a mac, already a container run
+```
+
+macOS has a sandbox of its own and this tool does not use it: `sandbox-exec` can bound
+neither a process tree nor a scratch filesystem, and it is deprecated. DESIGN.md carries
+that argument in full.
+
 ### Anki or the browser on another machine
 
-The tool runs where the sandbox is. Anki and your browser may be somewhere else. One SSH
-connection carries both directions.
+The tool runs where the isolation is — a sandbox on Linux, or a container engine, which is
+what a mac uses. Anki and your browser may be somewhere else. One SSH connection carries
+both directions.
 
 `cards --push` writes to AnkiConnect, which listens on `127.0.0.1:8765` on the machine
 that runs Anki. `--anki-addr HOST:PORT`, or `$BENKYOU_ANKI_ADDR`, names a different one.
@@ -147,9 +195,11 @@ binary can drive the loop.
 
 ## How the loop runs
 
-The binary holds no API key and calls no model. One command, `benkyou warm`, reaches a package index to install an exercise's declared dependencies; nothing on the gating or grading path reaches anything. It holds the state and prints
-structured work orders. Your agent writes the content with the model that you already
-pay for. The agent then writes the result back.
+The binary holds no API key and calls no model. Two commands reach a network: `benkyou
+warm` installs an exercise's declared dependencies from a package index, and `benkyou
+runner --pull` fetches the runner image. Nothing on the gating or grading path reaches
+anything. It holds the state and prints structured work orders. Your agent writes the
+content with the model that you already pay for. The agent then writes the result back.
 
 ```sh
 benkyou goals                        # what is stored, and where to write a new graph

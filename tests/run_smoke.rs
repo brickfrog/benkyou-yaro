@@ -11,10 +11,10 @@
 
 use std::path::PathBuf;
 
-use benkyou::run::{Access, Backend, Job, Limits};
+use benkyou::run::{Access, Backend, Job, Limits, Want};
 
 fn sandbox() -> Backend {
-    Backend::select(false).expect("a sandbox: install bubblewrap")
+    Backend::choose(Want::Auto, None).expect("a sandbox: install bubblewrap")
 }
 
 /// A run directory with a `work/` in it, which is what every real job has.
@@ -141,13 +141,25 @@ fn the_host_filesystem_is_not_reachable() {
 /// No network. A grader that fetches a dataset is an exercise that stops working
 /// offline and a generated script that phones out is worse; both should fail loudly
 /// here rather than silently succeed once.
+///
+/// Two probes, and the reason is that the first one was silently platform-dependent:
+/// `exec 3<>/dev/tcp/...` is a bash feature, so on any machine whose `/bin/sh` is dash —
+/// which is most of Debian and everything derived from it — the redirection failed on
+/// syntax and this test passed without ever opening a socket. The script now says which
+/// probe it managed to run, and the assertion requires one of them, so a probe that stops
+/// running can no longer read as a probe that found nothing.
 #[test]
 fn there_is_no_network() {
     let out = run(
         &scratch("net"),
-        "exec 3<>/dev/tcp/1.1.1.1/443 && echo CONNECTED",
+        "if command -v python3 >/dev/null 2>&1; then echo probe=python; \
+           python3 -c \"import socket;socket.create_connection(('1.1.1.1',443),timeout=5)\" \
+           2>/dev/null && echo CONNECTED; \
+         else echo probe=devtcp; \
+           (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null && echo CONNECTED; fi",
         30,
     );
+    assert!(out.stdout.contains("probe="), "no probe ran, so nothing was proved: {out:?}");
     assert!(!out.stdout.contains("CONNECTED"), "{out:?}");
 }
 
@@ -269,8 +281,8 @@ fn the_scratch_filesystem_is_bounded() {
 /// The default is isolation, and asking for the other one is not a matter of degree.
 #[test]
 fn the_default_backend_is_the_sandbox() {
-    assert_eq!(Backend::select(false).expect("a sandbox").name(), "sandbox");
-    assert_eq!(Backend::select(true).expect("host").name(), "unsafe-host");
+    assert_eq!(Backend::choose(Want::Auto, None).expect("a sandbox").name(), "sandbox");
+    assert_eq!(Backend::choose(Want::UnsafeHost, None).expect("host").name(), "unsafe-host");
 }
 
 /// A job that names a directory the caller never created is the caller's bug, and it
@@ -318,7 +330,7 @@ fn the_host_backend_can_still_fork() {
     let mut job = Job::new(&dir, WORK, "work", "for i in 1 2 3; do (true); done; echo forked", 30);
     job.limits = Limits { processes: 1, ..Limits::default() };
 
-    let out = Backend::select(true)
+    let out = Backend::choose(Want::UnsafeHost, None)
         .expect("host")
         .run(&job)
         .expect("ran");

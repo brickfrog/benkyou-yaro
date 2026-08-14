@@ -106,7 +106,7 @@ fn grade_in(
     root: &Path,
     backend: &Backend,
 ) -> Result<Attempt, String> {
-    let deps = crate::deps::require(&task.deps)?;
+    let deps = crate::deps::require(&task.deps, crate::deps::Runtime::of(backend))?;
     let check = root.join(CHECK);
     let out = root.join(OUT);
     let _ = fs::remove_dir_all(&check);

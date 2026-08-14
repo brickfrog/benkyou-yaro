@@ -153,7 +153,7 @@ pub fn run_once(
 ) -> Result<Run, String> {
     // Resolved once, before anything is copied: a missing set is the author's problem
     // to fix and there is no point building a workspace to discover it.
-    let deps = crate::deps::require(&task.deps)?;
+    let deps = crate::deps::require(&task.deps, crate::deps::Runtime::of(backend))?;
     let deps = deps.as_deref();
     let work = root.join(WORK);
     let check = root.join(CHECK);
@@ -287,7 +287,7 @@ fn check_run_cmd(task: &Task, solution_root: &Path, backend: &Backend) -> Option
     let secs = task.limits.learner_secs;
     // An unwarmed set makes this advisory unrunnable, not the exercise unsound: the
     // caller already refused before getting here, so this only ever sees `Ok`.
-    let deps = crate::deps::require(&task.deps).ok().flatten();
+    let deps = crate::deps::require(&task.deps, crate::deps::Runtime::of(backend)).ok().flatten();
     let job = Job::new(solution_root, &[(WORK, Access::Write)], WORK, cmd, secs)
         .with_deps(deps.as_deref());
     match backend.run(&job) {
@@ -331,7 +331,7 @@ pub fn run_gate(
     // What the declared packages actually resolved to, recorded beside the verdict.
     // An exact pin fixes what the author named; this is the only record of the tree
     // underneath it, and `run_once` has already refused an unwarmed set by here.
-    let resolved_deps = match crate::deps::require(&task.deps)? {
+    let resolved_deps = match crate::deps::require(&task.deps, crate::deps::Runtime::of(backend))? {
         Some(set) => crate::deps::resolved(&set)?,
         None => Vec::new(),
     };
@@ -398,6 +398,7 @@ pub fn run_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run::Want;
 
     fn put(path: PathBuf, body: &str) {
         fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
@@ -463,7 +464,7 @@ mod tests {
             &exercise("failrun", Some("exit 2")),
             &scratch("failrun"),
             "t",
-            &Backend::select(false).expect("a sandbox"),
+            &Backend::choose(Want::Auto, None).expect("a sandbox"),
         )
         .expect("gate ran");
 
@@ -482,7 +483,7 @@ mod tests {
             &exercise("okrun", Some("cat answer.txt")),
             &scratch("okrun"),
             "t",
-            &Backend::select(false).expect("a sandbox"),
+            &Backend::choose(Want::Auto, None).expect("a sandbox"),
         )
         .expect("gate ran");
 
@@ -499,7 +500,7 @@ mod tests {
             &exercise("norun", None),
             &scratch("norun"),
             "t",
-            &Backend::select(false).expect("a sandbox"),
+            &Backend::choose(Want::Auto, None).expect("a sandbox"),
         )
         .expect("gate ran");
         assert!(report.warnings.is_empty());

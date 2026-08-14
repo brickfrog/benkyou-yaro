@@ -69,6 +69,7 @@ fn attestation() -> Attestation {
             semantics: benkyou::run::RUNNER_SEMANTICS,
             backend: "sandbox".into(),
             profile: "bwrap 0.11.2".into(),
+            image: None,
         },
         env: Env::current(),
         deps: vec!["pandas==3.0.5".into()],

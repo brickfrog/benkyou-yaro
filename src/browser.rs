@@ -301,7 +301,7 @@ impl App {
             .run_cmd
             .as_deref()
             .ok_or("this exercise declares no [workspace] run_cmd")?;
-        let deps = crate::deps::require(&item.task.deps)?;
+        let deps = crate::deps::require(&item.task.deps, crate::deps::Runtime::of(&self.backend))?;
         let outcome = self.backend.run(
             &Job::new(
                 &item.root,
@@ -531,6 +531,7 @@ mod listing_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run::Want;
 
     fn work() -> PathBuf {
         PathBuf::from("/tmp/w")
@@ -577,14 +578,14 @@ mod tests {
              [task]\nid = \"t\"\nconcept_id = \"c\"\nkind = \"kata\"\nguidance_level = \"blank\"\n\
              [verify]\ncmd = \"sh check/check.sh\"\nmust_pass = [\"correctness\"]\n";
 
-        let backend = Backend::select(false).expect("a sandbox");
+        let backend = Backend::choose(Want::Auto, None).expect("a sandbox");
         let gate = |solution_passes, empty_fails, digest: &str| exercise::Gate {
             solution_passes,
             empty_fails,
             validated_at: "x".into(),
             digest: digest.into(),
             known_bad_caught: vec!["trap".into()],
-            runner: exercise::Runner::of(&Backend::select(false).expect("a sandbox")),
+            runner: exercise::Runner::of(&Backend::choose(Want::Auto, None).expect("a sandbox")),
             env: exercise::Env::current(),
             deps: vec![],
         };
@@ -641,7 +642,7 @@ mod tests {
              [verify]\ncmd = \"sh check/check.sh\"\nmust_pass = [\"correctness\"]\n",
         )
         .unwrap();
-        let backend = Backend::select(false).expect("a sandbox");
+        let backend = Backend::choose(Want::Auto, None).expect("a sandbox");
         let digest = crate::digest::exercise_digest(&dir).unwrap();
         exercise::write_gate(
             &dir,

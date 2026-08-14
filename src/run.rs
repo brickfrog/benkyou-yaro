@@ -58,6 +58,22 @@ const GUEST_ROOT: &str = "/box";
 /// is common and harmless; one that scribbles into the *real* `$HOME` is neither.
 const HOME_DIR: &str = ".home";
 
+/// Size of the private `/tmp` every job gets.
+///
+/// A ceiling rather than a budget: a runaway write fills 256 MiB of memory instead of
+/// the user's disk. Named once because both isolating backends have to agree on it, and
+/// a `/tmp` that is bounded under one and not the other is a job that passes on one
+/// machine and fills a laptop on another.
+pub(crate) const TMP_BYTES: u64 = 268_435_456;
+
+/// Size of the tmpfs carrying `/box` and `$HOME` under the container backend.
+///
+/// Under bubblewrap these are directories on the sandbox's own root tmpfs and need no
+/// size; a container has a real read-only rootfs, so the writable surfaces have to be
+/// asked for. Small on purpose: the workspace is a bind mount and `/tmp` is where a
+/// script is told to put scratch, so anything large landing here is a mistake.
+const BOX_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Environment for every job, under both backends.
 ///
 /// An allowlist rather than a filter, because the interesting variables are the ones
@@ -250,28 +266,80 @@ pub enum Backend {
     /// Isolated: no network, no host filesystem beyond the read-only runtime, no
     /// access to the caller's state, and a process namespace that dies as one.
     Sandbox { bwrap: PathBuf, version: String },
+    /// Isolated by a container engine. The same absences — no network, no host
+    /// filesystem, no study state — and one deliberate presence: the runtime is the
+    /// image's, pinned by digest, rather than the machine's `/usr`.
+    ///
+    /// This is what makes the tool work where there are no Linux namespaces to
+    /// unshare, and what makes a verdict describe an interpreter somebody chose. It is
+    /// not a *second* sandbox: `name()` differs, so a verdict earned under one is
+    /// refused under the other, and the image is recorded because it is the `/usr`.
+    Container { cli: PathBuf, engine: &'static str, version: String, image: Image },
     /// Not isolated. The job runs as the user, with the user's rights, over the
     /// user's whole filesystem. The name is the documentation.
+    UnsafeHost,
+}
+
+/// The runtime a container job gets, resolved to bytes.
+///
+/// `reference` is what the caller pinned and is evidence; `id` is what the engine
+/// resolved it to and is *identity*. They are not interchangeable: one manifest-list
+/// digest names a different image on every architecture, which is exactly the
+/// difference a verdict must not be allowed to straddle. Jobs are launched by `id` for
+/// the same reason — a tag, or even a re-pushed index, cannot move underneath a run
+/// that has already been inspected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    pub reference: String,
+    pub id: String,
+    pub arch: String,
+}
+
+/// Which backend the caller is asking for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Want {
+    /// The sandbox if this machine has one, a container engine if it does not.
+    ///
+    /// Ordered rather than negotiated. Bubblewrap needs no daemon, no image and no
+    /// pull, so where it works it stays the default and nothing about an existing
+    /// library changes. The fallback is what a mac has.
+    #[default]
+    Auto,
+    /// A container engine, refusing rather than falling back. What a Linux user asks
+    /// for to gate against the same runtime a mac will use — and what the container
+    /// tests need, since this machine has bubblewrap and `Auto` would never reach the
+    /// code under test.
+    Container,
     UnsafeHost,
 }
 
 impl Backend {
     /// Choose a backend.
     ///
-    /// The default is the sandbox, and the absence of one is a refusal rather than a
-    /// downgrade. Claiming isolation while providing a working directory would be
-    /// worse than not having it: the caller would stop reading the warnings.
-    pub fn select(unsafe_host: bool) -> Result<Self, String> {
-        if unsafe_host {
-            return Ok(Backend::UnsafeHost);
+    /// An absent sandbox is a refusal or a container, never a downgrade to the host.
+    /// Claiming isolation while providing only a working directory would be worse than
+    /// not having it: the caller would stop reading the warnings.
+    pub fn choose(want: Want, image: Option<&str>) -> Result<Self, String> {
+        let image = image.unwrap_or(DEFAULT_IMAGE);
+        match want {
+            Want::UnsafeHost => Ok(Backend::UnsafeHost),
+            Want::Container => detect_container(image),
+            Want::Auto => match SANDBOX.clone() {
+                Ok(backend) => Ok(backend),
+                // Both refusals, not just the second: on Linux the reader wants to know
+                // bubblewrap was looked for, and on a mac the first line is the one that
+                // explains why a container is being discussed at all.
+                Err(no_sandbox) => detect_container(image)
+                    .map_err(|no_container| format!("{no_sandbox}\n  {no_container}")),
+            },
         }
-        SANDBOX.clone()
     }
 
     /// Stable name for the record, and for humans reading a refusal.
     pub fn name(&self) -> &'static str {
         match self {
             Backend::Sandbox { .. } => "sandbox",
+            Backend::Container { .. } => "container",
             Backend::UnsafeHost => "unsafe-host",
         }
     }
@@ -279,23 +347,51 @@ impl Backend {
     /// Execution profile: what a verdict earned under this backend was earned under.
     ///
     /// For the sandbox this names the isolation tool and its version, which is a real
-    /// property of the run. For the host backend it is deliberately just `host`:
-    /// enumerating what the host provided is exactly the thing that cannot be done
-    /// (see `digest::exercise_digest`), and a longer string would imply otherwise.
+    /// property of the run. For a container it names the engine, its version and the
+    /// reference that was pinned — evidence a reader can act on, while the identity
+    /// that decides staleness is [`Backend::image_id`]. For the host backend it is
+    /// deliberately just `host`: enumerating what the host provided is exactly the
+    /// thing that cannot be done (see `digest::exercise_digest`), and a longer string
+    /// would imply otherwise.
     pub fn profile(&self) -> String {
         match self {
             Backend::Sandbox { version, .. } => format!("bwrap {version}"),
+            Backend::Container { engine, version, image, .. } => {
+                format!("{engine} {version} {}", image.reference)
+            }
             Backend::UnsafeHost => "host".to_string(),
+        }
+    }
+
+    /// The exact runtime a verdict was earned against, when there is one.
+    ///
+    /// `None` for the two backends whose runtime is the host's, because there the
+    /// honest answer is that it is not enumerable. `Some` is a promise of the opposite:
+    /// these bytes, this architecture, and a refusal when they move.
+    pub fn image_id(&self) -> Option<&str> {
+        match self {
+            Backend::Container { image, .. } => Some(&image.id),
+            _ => None,
         }
     }
 
     pub fn run(&self, job: &Job) -> Result<Outcome, String> {
         job.check_view()?;
-        let isolated = matches!(self, Backend::Sandbox { .. });
-        let script = format!("{}{}", job.limits.prelude(isolated), job.script);
-        let mut cmd = match self {
-            Backend::Sandbox { bwrap, .. } => sandbox_command(bwrap, job, &script)?,
-            Backend::UnsafeHost => host_command(job, &script)?,
+        // Namespaced process accounting, which decides whether `ulimit -u` means
+        // anything. True only under bubblewrap: a container shares the host's uid, so
+        // `RLIMIT_NPROC` is measured against the whole logged-in session there exactly
+        // as it is on the host — the container's cap is `--pids-limit`, a cgroup on the
+        // container, which is the thing an rlimit was standing in for.
+        let namespaced = matches!(self, Backend::Sandbox { .. });
+        let script = format!("{}{}", job.limits.prelude(namespaced), job.script);
+        let (mut cmd, kill) = match self {
+            Backend::Sandbox { bwrap, .. } => (sandbox_command(bwrap, job, &script)?, Kill::Group),
+            Backend::Container { cli, image, .. } => {
+                let name = container_name();
+                let cmd = container_command(cli, image, job, &script, &name)?;
+                (cmd, Kill::Container { cli: cli.clone(), name })
+            }
+            Backend::UnsafeHost => (host_command(job, &script)?, Kill::Group),
         };
         cmd
             // Own process group, so the deadline can kill everything the script
@@ -303,12 +399,13 @@ impl Backend {
             // running - and holding the output pipes open, which is what turns a
             // missed timeout into a permanent hang. Under the sandbox this is belt to
             // the PID namespace's braces; on the host it is the only mechanism there
-            // is.
+            // is. Under a container it kills the *client*, which is why `Kill` also
+            // stops the container the client was watching.
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        spawn_and_wait(cmd, job.timeout_secs, job.limits.output_bytes)
+        spawn_and_wait(cmd, job.timeout_secs, job.limits.output_bytes, kill)
     }
 }
 
@@ -323,9 +420,14 @@ static SANDBOX: LazyLock<Result<Backend, String>> = LazyLock::new(detect_sandbox
 /// Two different failures wear the same missing binary. On Linux it is a package away.
 /// Everywhere else `bwrap` is a Linux program — it isolates with Linux namespaces, and
 /// there is nothing to install — so "install it" would send the reader after a package
-/// that cannot exist, and the only honest advice is to move the executing half to a
-/// Linux host. The state travels and the exercise library is plain JSON; the sandbox is
-/// the one part that does not.
+/// that cannot exist. What is actionable there is a container engine, and the second
+/// route is a Linux host: the state travels and the exercise library is plain JSON, so
+/// the executing half is the only part that has to be anywhere in particular.
+///
+/// `--unsafe-host` is deliberately not offered here. It is offered on Linux, where the
+/// reader has a working sandbox one package away and the flag is a considered
+/// alternative; naming it as the *first* thing a mac user reads would make the easiest
+/// path out of a refusal the one that runs generated scripts as them.
 ///
 /// Takes the OS rather than reading `cfg!`, so the wording a mac user gets is reachable
 /// from a test on the machine that wrote it.
@@ -337,9 +439,9 @@ fn no_sandbox_message(os: &str) -> String {
     } else {
         format!(
             "no sandbox available: the sandbox is bubblewrap, which isolates with Linux \
-             namespaces, and this is {os}. Nothing to install here: run `gate`, \
-             `attempt`, `grade` and `serve` on a Linux host, or pass --unsafe-host to \
-             run generated scripts with your own user's rights."
+             namespaces, and this is {os}, where there is nothing to install. Run the \
+             exercise half in a container instead - install docker or podman, then \
+             `benkyou runner --pull` once - or run it on a Linux host."
         )
     }
 }
@@ -386,6 +488,261 @@ fn which(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// Container engines this can drive, in the order they are tried.
+///
+/// Both take the same arguments for everything used here. Docker first only because a
+/// machine with both is usually a machine where docker is the one that is running.
+const ENGINES: [&str; 2] = ["docker", "podman"];
+
+/// The runtime a container job gets unless the caller names another one.
+///
+/// Pinned to a manifest-list digest, which is one identity across every architecture in
+/// it: the same reference resolves to an arm64 image on a mac and an amd64 image on a
+/// desktop, and the per-platform id that lands in a verdict distinguishes the two. A
+/// tag alone would make "the runner image" mean whatever was pushed last, which is the
+/// one thing a recorded runtime must not do.
+///
+/// `python:3.13-slim` because the graders this tool grades with are shell and Python,
+/// and slim is Debian rather than Alpine: musl has no manylinux wheels, so an Alpine
+/// runner would turn every warmed dependency into a source build that cannot happen
+/// offline. What the image does *not* have is as load-bearing as what it does — no
+/// `sqlite3`, for one — and `--image` exists for exactly that.
+pub const DEFAULT_IMAGE: &str =
+    "python:3.13-slim@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a";
+
+/// Label carried by every container this process starts, valued with its pid.
+///
+/// The container backend has no `--die-with-parent`. If this process is killed outright
+/// the engine keeps running the job it was watching, and nothing else would ever stop
+/// it. Each run is labelled with the pid that owns it, and the next detection kills the
+/// ones whose owner is gone.
+const OWNER_LABEL: &str = "benkyou.owner";
+
+/// Find an engine, or say what to install.
+fn find_engine() -> Result<(&'static str, PathBuf), String> {
+    ENGINES
+        .iter()
+        .find_map(|name| which(name).map(|path| (*name, path)))
+        .ok_or_else(|| {
+            "no container engine: neither `docker` nor `podman` is on PATH. Install one, \
+             or pass --unsafe-host to run generated scripts with your own user's rights."
+                .to_string()
+        })
+}
+
+/// What `benkyou runner` reports: the engine, and whether the runtime is here yet.
+///
+/// `id` absent is the normal state on a fresh machine and is not an error here - this is
+/// the command that tells a reader what to do about it, so it has to be able to describe
+/// the situation it exists to fix.
+#[derive(Debug)]
+pub struct RunnerStatus {
+    pub engine: &'static str,
+    pub version: String,
+    pub reference: String,
+    pub image: Option<Image>,
+    pub pulled: bool,
+}
+
+/// Report the engine and the runner image, optionally fetching the image first.
+///
+/// The fetch lives here and nowhere else. `warm` is the only other command that touches
+/// a network, and both are commands a person runs on purpose: everything on the gating
+/// path resolves what is already local or refuses.
+pub fn runner_status(reference: Option<&str>, pull: bool) -> Result<RunnerStatus, String> {
+    let reference = reference.unwrap_or(DEFAULT_IMAGE).to_string();
+    let (engine, cli) = find_engine()?;
+    let version = Command::new(&cli)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("{}: {e}", cli.display()))
+        .map(|o| engine_version(&String::from_utf8_lossy(&o.stdout)))?;
+
+    if pull {
+        let out = Command::new(&cli)
+            .args(["pull", &reference])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("{}: {e}", cli.display()))?;
+        if !out.status.success() {
+            return Err(format!(
+                "{engine} pull {reference}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+    }
+
+    Ok(RunnerStatus {
+        engine,
+        version,
+        image: inspect_image(&cli, engine, &reference).ok(),
+        reference,
+        pulled: pull,
+    })
+}
+
+fn detect_container(reference: &str) -> Result<Backend, String> {
+    let (engine, cli) = find_engine()?;
+
+    let version = Command::new(&cli)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("{}: {e}", cli.display()))
+        .map(|o| engine_version(&String::from_utf8_lossy(&o.stdout)))?;
+
+    let image = inspect_image(&cli, engine, reference)?;
+
+    // Presence is not capability, and here that covers more than a kernel feature: a
+    // daemon that is installed but not running, an engine that rejects one of the
+    // policy flags, an SELinux host that denies the bind mounts, a cgroup without
+    // memory accounting. All of them fail on the first real job otherwise, which is
+    // the middle of somebody's gate.
+    let backend = Backend::Container { cli, engine, version, image };
+    probe_container(&backend)?;
+
+    if let Backend::Container { cli, .. } = &backend {
+        reap_orphans(cli);
+    }
+    Ok(backend)
+}
+
+/// `docker version 29.7.2, build …` → `29.7.2`. Cosmetic, and cosmetic in a field that
+/// gets compared: a build hash that moves with every point release would make the
+/// drift warning fire on upgrades nobody needs to hear about.
+fn engine_version(line: &str) -> String {
+    line.split_whitespace()
+        .find(|w| w.starts_with(|c: char| c.is_ascii_digit()))
+        .unwrap_or("unknown")
+        .trim_end_matches(',')
+        .to_string()
+}
+
+/// Resolve a reference to the bytes behind it, locally and without a network.
+///
+/// A pull here would put a network on the gating path, which is the one thing the whole
+/// dependency mechanism exists to avoid: an image fetched mid-gate is a runtime nobody
+/// chose, arriving at the least reviewable moment. So an absent image is a refusal
+/// naming the command that fetches it on purpose.
+fn inspect_image(cli: &Path, engine: &str, reference: &str) -> Result<Image, String> {
+    let out = Command::new(cli)
+        .args(["image", "inspect", "--format", "{{.Id}} {{.Architecture}}", reference])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{}: {e}", cli.display()))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(format!(
+            "runner image not present: {reference}\n  {why}\n  run `benkyou runner --pull` \
+             once, on purpose: gate, attempt, grade and serve never reach a network."
+        ));
+    }
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let (id, arch) = line
+        .split_once(' ')
+        .ok_or_else(|| format!("{engine}: could not read the id of {reference}: {line:?}"))?;
+    if !id.starts_with("sha256:") {
+        return Err(format!("{engine}: {reference} reported no digest id ({id:?})"));
+    }
+    Ok(Image {
+        reference: reference.to_string(),
+        id: id.to_string(),
+        arch: arch.trim().to_string(),
+    })
+}
+
+/// Run one job under the real policy, through the real path, with a real bind mount.
+///
+/// Not a cheaper imitation: it goes through [`Backend::run`], so the prelude, the
+/// deadline and the mounts are the ones a gate will get. A probe that tested something
+/// easier is a probe that passes on a machine where the first exercise fails.
+fn probe_container(backend: &Backend) -> Result<(), String> {
+    // Named like a job rather than after the process: every thread of one process shares
+    // a pid, so a pid-keyed directory let two concurrent detections delete each other's
+    // witness file mid-probe. Found by the container tests, which detect once per test.
+    let dir = std::env::temp_dir().join(format!("benkyou-probe-{}", container_name()));
+    let _ = fs::remove_dir_all(&dir);
+    let work = dir.join("work");
+    fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
+    fs::write(work.join("witness"), "witness").map_err(|e| format!("{}: {e}", work.display()))?;
+
+    let job = Job::new(
+        &dir,
+        &[("work", Access::Read)],
+        "",
+        "cat work/witness > /dev/null && : > /tmp/probe && exit 7",
+        60,
+    );
+    let outcome = backend.run(&job);
+    let _ = fs::remove_dir_all(&dir);
+
+    match outcome {
+        Ok(out) if out.exit_code == Some(7) => Ok(()),
+        Ok(out) => Err(format!(
+            "{} could not run a job ({}). Is the engine running?",
+            backend.profile(),
+            if out.stderr.trim().is_empty() { out.stdout.trim() } else { out.stderr.trim() }
+        )),
+        Err(e) => Err(format!("{}: {e}", backend.profile())),
+    }
+}
+
+/// Kill containers left behind by a benkyou that is no longer running.
+///
+/// Best effort throughout: this is tidying, and a failure to tidy must never stop a
+/// gate. Liveness is asked of the shell rather than of libc, for the same reason
+/// `kill_group` does — `kill -0` is a shell builtin everywhere `/bin/sh` is.
+fn reap_orphans(cli: &Path) {
+    let Ok(out) = Command::new(cli)
+        .args([
+            "ps",
+            "--filter",
+            &format!("label={OWNER_LABEL}"),
+            "--format",
+            &format!("{{{{.ID}}}} {{{{.Label \"{OWNER_LABEL}\"}}}}"),
+        ])
+        .stdin(Stdio::null())
+        .output()
+    else {
+        return;
+    };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((id, owner)) = line.split_whitespace().next().zip(line.split_whitespace().nth(1))
+        else {
+            continue;
+        };
+        if owner.parse::<u32>().is_err() {
+            continue;
+        }
+        let alive = Command::new("/bin/sh")
+            .args(["-c", &format!("kill -0 {owner} 2>/dev/null")])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(true);
+        if !alive {
+            let _ = Command::new(cli)
+                .args(["kill", id])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
+/// A name per job, so the deadline has something to kill.
+///
+/// The pid alone is not enough: a gate runs at least three jobs, and `serve` runs one
+/// per press of a button, so a shared name would make the second run collide with the
+/// first and a kill hit whichever container happened to hold it.
+fn container_name() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "benkyou-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// The isolation policy, with no job-specific mounts.
 ///
 /// Split out so the capability probe runs under exactly the policy a real job gets.
@@ -428,18 +785,21 @@ fn base_args() -> Result<Vec<String>, String> {
         "/proc",
         "--dev",
         "/dev",
-        // A bounded tmpfs, so filling /tmp fills 256 MiB of memory and not a disk.
-        "--size",
-        "268435456",
-        "--perms",
-        "1777",
-        "--tmpfs",
-        "/tmp",
         "--ro-bind",
         "/usr",
         "/usr",
     ];
     a.extend(fixed.iter().map(|s| s.to_string()));
+    // Pushed rather than sitting in the array above, so the ceiling is written down in
+    // exactly one place: `--size` applies to the mount that follows it.
+    a.extend([
+        "--size".to_string(),
+        TMP_BYTES.to_string(),
+        "--perms".to_string(),
+        "1777".to_string(),
+        "--tmpfs".to_string(),
+        "/tmp".to_string(),
+    ]);
     for path in HOST_RO {
         a.extend(["--ro-bind-try".to_string(), path.to_string(), path.to_string()]);
     }
@@ -465,12 +825,33 @@ fn base_args() -> Result<Vec<String>, String> {
 /// directory per invocation forever. The contents are a pure function of uid and gid,
 /// so sharing is safe and a directory left by an earlier run is already correct.
 static IDENTITY: LazyLock<Result<(PathBuf, PathBuf), String>> = LazyLock::new(|| {
-    use std::os::unix::fs::MetadataExt;
-    let me = fs::metadata("/proc/self").map_err(|e| format!("/proc/self: {e}"))?;
-    let (uid, gid) = (me.uid(), me.gid());
+    let (uid, gid) = uid_gid()?;
     let dir = identity_dir(&std::env::temp_dir(), uid)?;
     write_identity(&dir, uid, gid)
 });
+
+/// This process's effective uid and gid, read once.
+///
+/// From a file this process just created rather than from `/proc/self`, which does not
+/// exist on macOS - and the container backend has to work there, since it is the whole
+/// reason it exists. A freshly created file is owned by the effective uid and gid by
+/// definition, so the answer is the same one `/proc` gave on Linux without asking a
+/// second operating system for a filesystem it does not have. No subprocess either: an
+/// `id -u` would be one more thing to find on `PATH` before anything can run.
+static UID_GID: LazyLock<Result<(u32, u32), String>> = LazyLock::new(|| {
+    use std::os::unix::fs::MetadataExt;
+    let probe = std::env::temp_dir().join(format!("benkyou-whoami-{}", std::process::id()));
+    let _ = fs::remove_file(&probe);
+    write_new(&probe, "")?;
+    let md = fs::metadata(&probe).map_err(|e| format!("{}: {e}", probe.display()));
+    let _ = fs::remove_file(&probe);
+    let md = md?;
+    Ok((md.uid(), md.gid()))
+});
+
+pub(crate) fn uid_gid() -> Result<(u32, u32), String> {
+    UID_GID.as_ref().copied().map_err(Clone::clone)
+}
 
 /// Write the two files, returning their paths.
 ///
@@ -608,11 +989,188 @@ fn host_command(job: &Job, script: &str) -> Result<Command, String> {
     Ok(cmd)
 }
 
+/// The container policy, with no job-specific mounts.
+///
+/// Every flag here is one of the guarantees the sandbox gets from a namespace, asked of
+/// the engine instead:
+///
+/// - `--network none`: no route out, the same absence `--unshare-net` gives.
+/// - `--read-only`: the image's filesystem cannot be written, so nothing a job does
+///   survives it and no two jobs can see each other's leftovers.
+/// - `--cap-drop ALL` and `no-new-privileges`: a job starts with no capabilities and
+///   cannot acquire any, which is the part `--unshare-user` gets for free by having
+///   none to begin with.
+/// - `--pids-limit`: the real process cap, and the reason `ulimit -u` is not applied
+///   here. A container shares the host's uid, so `RLIMIT_NPROC` would be measured
+///   against the whole session exactly as it is on the host; a cgroup counts the
+///   container.
+/// - `--memory`/`--memory-swap` equal: a ceiling on resident memory that cannot be
+///   dodged by swapping. `ulimit -v` still applies from the prelude; one bounds the
+///   address space a process may ask for, the other what the container may hold.
+/// - `--user`: the caller's own uid, so files a job writes into its workspace belong to
+///   the caller and not to root. This is what makes the writable view usable at all.
+/// - The three tmpfs mounts are the writable surfaces: `/box` for the job's root,
+///   `$HOME` under it, and a bounded `/tmp`. Each is owned by the caller's uid, because
+///   a root-owned tmpfs under `--user` is a directory the job cannot write - which
+///   would diverge from the sandbox in the one place a grader always touches.
+/// - The synthetic `/etc/passwd` and `/etc/group` are the same two files the sandbox
+///   binds, and for the same reason: `--user 1000` names a uid the image has never
+///   heard of, and a failing `getpwuid` breaks Python's `expanduser` and much else.
+fn container_policy(limits: &Limits) -> Result<Vec<String>, String> {
+    let (uid, gid) = uid_gid()?;
+    let (passwd, group) = identity_files()?;
+    let home = format!("{GUEST_ROOT}/{HOME_DIR}");
+    let own = format!("uid={uid},gid={gid}");
+
+    let mut a: Vec<String> = ["run", "--rm", "--network", "none", "--read-only"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    a.extend(
+        [
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    a.push(limits.processes.to_string());
+    a.extend(["--memory".to_string(), format!("{}k", limits.address_space_kb)]);
+    a.extend(["--memory-swap".to_string(), format!("{}k", limits.address_space_kb)]);
+    a.extend(["--user".to_string(), format!("{uid}:{gid}")]);
+    a.extend([
+        "--tmpfs".to_string(),
+        format!("{GUEST_ROOT}:rw,mode=0755,{own},size={BOX_BYTES}"),
+    ]);
+    a.extend([
+        "--tmpfs".to_string(),
+        format!("{home}:rw,mode=0700,{own},size={BOX_BYTES}"),
+    ]);
+    a.extend([
+        "--tmpfs".to_string(),
+        format!("/tmp:rw,mode=1777,size={TMP_BYTES}"),
+    ]);
+    for (src, dst) in [(passwd, "/etc/passwd"), (group, "/etc/group")] {
+        a.extend([
+            "--mount".to_string(),
+            format!("type=bind,source={},target={dst},readonly", src.display()),
+        ]);
+    }
+    for (k, v) in ENV {
+        a.extend(["--env".to_string(), format!("{k}={v}")]);
+    }
+    a.extend(["--env".to_string(), format!("HOME={home}")]);
+    Ok(a)
+}
+
+fn container_command(
+    cli: &Path,
+    image: &Image,
+    job: &Job,
+    script: &str,
+    name: &str,
+) -> Result<Command, String> {
+    let mut cmd = Command::new(cli);
+    cmd.args(container_policy(&job.limits)?);
+    cmd.args(["--name", name]);
+    cmd.args([
+        "--label".to_string(),
+        format!("{OWNER_LABEL}={}", std::process::id()),
+    ]);
+
+    for (entry, access) in job.view {
+        let mut mount = format!(
+            "type=bind,source={},target={GUEST_ROOT}/{entry}",
+            job.root.join(entry).display()
+        );
+        if *access == Access::Read {
+            mount.push_str(",readonly");
+        }
+        cmd.args(["--mount".to_string(), mount]);
+    }
+    // Read-only, and named outside `view` so no caller can hand it out writable.
+    // `PYTHONPATH` is set here rather than inherited, for the reason the whole
+    // environment is an allowlist: a verdict must not depend on the shell that launched
+    // the tool. This one is a property of the exercise - declared in `task.toml`,
+    // warmed on purpose, identical on every run.
+    if let Some(set) = job.deps {
+        cmd.args([
+            "--mount".to_string(),
+            format!(
+                "type=bind,source={},target={},readonly",
+                set.display(),
+                crate::deps::GUEST_DEPS
+            ),
+        ]);
+        cmd.args([
+            "--env".to_string(),
+            format!("PYTHONPATH={}", crate::deps::GUEST_DEPS),
+        ]);
+    }
+    cmd.args(["--workdir", &job.guest_cwd()]);
+    // `/bin/sh` rather than the image's entrypoint: a runner image is not required to
+    // have one, and an image whose entrypoint wrapped the script would be executing
+    // something this tool never wrote.
+    cmd.args(["--entrypoint", "/bin/sh"]);
+    // By id, not by reference. The reference was resolved once, at detection; a tag or
+    // an index that moved in between would otherwise put a different runtime under a
+    // verdict that names the old one.
+    cmd.args([&image.id, "-c", script]);
+    // The client keeps the caller's environment, deliberately, and it does not reach
+    // the job: an engine forwards only what `--env` names, so `DOCKER_HOST`,
+    // `CONTAINER_HOST` and a rootless `XDG_RUNTIME_DIR` are how the client finds its
+    // daemon rather than something a script can read. Clearing them would break
+    // rootless podman and every non-default context for no gain.
+    //
+    // What the allowlist cannot govern here is the image's *own* `ENV`. A python image
+    // exports `PYTHON_VERSION` and a `GPG_KEY`, and there is no engine flag that
+    // unsets them. That is a property of the image rather than of the caller's shell,
+    // and the image is the one thing a container verdict records exactly - so it is a
+    // difference from the sandbox, and a bounded one.
+    Ok(cmd)
+}
+
 // ---------------------------------------------------------------------------
 // Running
 // ---------------------------------------------------------------------------
 
-fn spawn_and_wait(mut cmd: Command, timeout_secs: u32, cap: usize) -> Result<Outcome, String> {
+/// How a run is stopped when the deadline fires, or when output is still in flight
+/// after it should not be.
+///
+/// The process group is enough for the two backends whose job *is* the child process
+/// tree. It is not enough for a container: killing the engine's client leaves the
+/// container running - the daemon owns it, and it never noticed the client leave. So a
+/// container is stopped by name first, and the group is killed afterwards to collect
+/// the client. The order matters in that direction only: kill the client first and the
+/// name may still be running a fork bomb nobody is watching.
+enum Kill {
+    Group,
+    Container { cli: PathBuf, name: String },
+}
+
+impl Kill {
+    fn fire(&self, pgid: u32) {
+        if let Kill::Container { cli, name } = self {
+            let _ = Command::new(cli)
+                .args(["kill", name])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        kill_group(pgid);
+    }
+}
+
+fn spawn_and_wait(
+    mut cmd: Command,
+    timeout_secs: u32,
+    cap: usize,
+    kill: Kill,
+) -> Result<Outcome, String> {
     let started = Instant::now();
     let mut child = cmd.spawn().map_err(|e| format!("failed to start: {e}"))?;
     let pgid = child.id();
@@ -629,7 +1187,7 @@ fn spawn_and_wait(mut cmd: Command, timeout_secs: u32, cap: usize) -> Result<Out
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => break status,
             None if started.elapsed() >= deadline => {
-                kill_group(pgid);
+                kill.fire(pgid);
                 timed_out = true;
                 break child.wait().map_err(|e| e.to_string())?;
             }
@@ -641,8 +1199,8 @@ fn spawn_and_wait(mut cmd: Command, timeout_secs: u32, cap: usize) -> Result<Out
     // grandchild holding the write end. Never block on it indefinitely: collect what
     // arrived, kill the group to release the rest, and move on. Output is diagnostic;
     // the verdict comes from the exit code and the reward file.
-    let (stdout, out_cut) = collect(&out_rx, &mut || kill_group(pgid));
-    let (stderr, err_cut) = collect(&err_rx, &mut || kill_group(pgid));
+    let (stdout, out_cut) = collect(&out_rx, &mut || kill.fire(pgid));
+    let (stderr, err_cut) = collect(&err_rx, &mut || kill.fire(pgid));
 
     Ok(Outcome {
         // A killed child reports no code. Distinguishing that from a real exit is what
@@ -755,17 +1313,20 @@ mod refusal_tests {
     }
 
     /// On a mac there is nothing to install, so advice to install is worse than none:
-    /// it sends the reader to a Homebrew formula for a Linux namespace API.
+    /// it sends the reader to a Homebrew formula for a Linux namespace API. What is
+    /// actionable there is a container engine, and the refusal has to say so — a reader
+    /// who reaches for `--unsafe-host` because the message named nothing else is the
+    /// failure this wording exists to prevent, which is why the flag is absent from it.
     #[test]
-    fn a_mac_is_told_where_the_sandbox_lives_instead() {
+    fn a_mac_is_pointed_at_a_container() {
         let msg = no_sandbox_message("macos");
         assert!(msg.contains("macos"), "the refusal must name the platform: {msg}");
         assert!(!msg.contains("Install it"), "nothing to install on a mac: {msg}");
         assert!(msg.contains("Linux namespaces"), "{msg}");
-        assert!(msg.contains("Linux host"), "{msg}");
-        assert!(msg.contains("--unsafe-host"), "{msg}");
-        for cmd in ["gate", "attempt", "grade", "serve"] {
-            assert!(msg.contains(cmd), "refusal did not name {cmd}: {msg}");
+        assert!(msg.contains("Linux host"), "the other route must stay named: {msg}");
+        assert!(!msg.contains("--unsafe-host"), "must not offer the host backend: {msg}");
+        for wanted in ["docker", "podman", "benkyou runner --pull"] {
+            assert!(msg.contains(wanted), "refusal did not name {wanted}: {msg}");
         }
     }
 }

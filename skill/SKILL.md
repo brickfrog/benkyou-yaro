@@ -63,6 +63,7 @@ benkyou seed ramp --known a,b --unknown x      # what they already know, in one 
 benkyou ask ramp                               # highest-leverage question
 benkyou record ramp <node> pass|partial|fail|skip
 benkyou order ramp --kind exercise             # what to generate, and for whom
+benkyou runner                                 # is a runtime here, and which image
 benkyou gate <dir> --scratch /tmp/x           # prove the exercise is real, and bank it
 benkyou items --concept <id>                   # banked exercises, reusable by digest
 benkyou attempt <dir|digest>                   # lay out a workspace for the learner
@@ -269,6 +270,17 @@ of them - even to fix a typo in the prose - and `attempt`, `grade` and `serve` a
 with `changed since it was gated` until you re-run the gate. Do not hand-write or copy a
 `.gate.json`; the digest will not match and the refusal is the point.
 
+**A verdict is bound to the runtime as tightly as to the bytes.** `.gate.json` records
+the backend and, under a container, the image id the engine resolved. Gate with the
+sandbox and grade with a container and it refuses; gate under one `--image` and grade
+under another and it refuses too, naming both — `gated against runner image X, running
+Y` — and points you back at `benkyou gate`. So settle the runtime before you gate.
+`benkyou runner` reports the engine, its version, the image and whether that image is
+present locally, and exits non-zero when it is not; it is also the only command that
+will fetch one, because `gate`, `attempt`, `grade` and `serve` resolve what is already
+local and refuse rather than reach a network mid-run. A newer engine driving the same
+image only warns.
+
 **The gate is necessary and nowhere near sufficient.** Two of its directions prove only
 that the reference passes and an empty stub fails. That bar is met by an exercise that
 grades nothing.
@@ -344,20 +356,29 @@ Other rules that cost real debugging:
   both use `DIR/work`; pointing either at the workspace itself gives
   `<dir>/work: no workspace here yet`. The run directory is cleaned up afterwards, so
   `out/reward.json` is not left around to inspect.
-- **Declare what you import; the machine may not have it.** `/usr` is mounted read-only,
-  so anything installed system-wide is already importable and needs no declaration. For
-  anything else, name it in `task.toml` with an exact pin:
+- **Declare what you import; the runtime may not have it.** Under the sandbox the runtime
+  is the machine's own `/usr`, mounted read-only, so anything installed system-wide is
+  already importable and needs no declaration. Under a container it is the pinned image
+  instead: python3, pip and the usual shell tools, and nothing else. Know which one you
+  are writing for — the default image has no `sqlite3`, so a grader that shells out to it
+  needs `--image` naming one that does, or an approach that does not shell out. For
+  anything the runtime lacks, name it in `task.toml` with an exact pin:
 
   ```toml
   [deps]
   python = ["pandas==3.0.5"]
   ```
 
-  Then run `benkyou warm <exercise-dir>` **once**, before gating. That is the only
-  command here that reaches a network. It installs the packages into a cache keyed by the
-  list and by the interpreter's ABI; every later run binds that directory read-only with
-  `PYTHONPATH` pointed at it, so graders call bare `python3` and the import works with no
-  network and nothing to resolve.
+  Then run `benkyou warm <exercise-dir>` **once**, before gating — and **with the backend
+  that will gate**, so `benkyou warm <dir> --container` when a container will run it.
+  That and `benkyou runner --pull` are the only two commands here that reach a network.
+  The packages go into a cache keyed by the list and by the runtime that will import
+  them: the host interpreter's ABI under the sandbox, or the image id, its architecture
+  and that image's ABI under a container — warming for a container runs `pip` inside the
+  image. A set built for one runtime is not a set for the other, so warming against the
+  wrong one leaves the exercise refused as unwarmed. Every later run binds that directory
+  read-only with `PYTHONPATH` pointed at it, so graders call bare `python3` and the
+  import works with no network and nothing to resolve.
 
   Rules the tool enforces, each because the alternative is worse:
 
@@ -365,8 +386,10 @@ Other rules that cost real debugging:
     month — a stable key over changing content, which is the one thing a digest must not
     do. `==` is required; a range or a bare name is refused.
   - **Registry names only, and only wheels.** No URL, path, VCS reference or `-e`. Warming
-    runs on *your* machine with *your* rights, from a file a model generated, so a
-    `git+https://…` or an sdist build would be arbitrary code execution by design.
+    for the sandbox runs on *your* machine with *your* rights, from a file a model
+    generated, so a `git+https://…` or an sdist build would be arbitrary code execution by
+    design. The rule holds for a container too, where the install is confined but the spec
+    is still one nobody read.
   - **Not gated until warmed.** `gate`, `attempt`, `grade` and `serve` refuse an exercise
     whose set is missing, and say which packages and where. A missing package would
     otherwise surface as `CheckBroken` and send you to debug a grader that is fine.
@@ -395,16 +418,20 @@ Other rules that cost real debugging:
 - Gating is non-destructive: it writes `.gate.json` and leaves the authored files
   byte-identical. Re-gate after every edit, however small — the verdict is bound to
   the content, and a stale one refuses rather than lies.
-- **There is no network.** Every script you write runs in a sandbox with no route out.
+- **There is no network.** Every script you write runs isolated with no route out — the
+  sandbox unshares the network, a container is started with `--network none`.
   A `setup/` that downloads a dataset, a grader that calls an API, a `pip install` at
   check time — all fail, and they fail at gate time rather than on the learner. Ship
   the data in `setup/` or generate it in the script.
-- **You get the machine's interpreter, its installed packages, and whatever you
-  declared.** `/usr` is visible read-only; a virtualenv, `~/.local/lib`, and anything
-  under a home directory are not. A grader needing a package the machine lacks is an
-  exercise that cannot be gated *until* it names the package in `[deps]` and somebody
-  runs `benkyou warm`. A PEP 723 header with `uv run` will not save you: `uv` would have
-  to reach the network to resolve, and there is none.
+- **You get one read-only runtime, plus whatever you declared.** Under the sandbox that
+  is the machine's interpreter and its installed packages, with `/usr` visible read-only.
+  Under a container it is the pinned image and the host's `/usr` is not there at all, so
+  check which one you are targeting before depending on a binary: the default image has
+  python3 and pip but no `sqlite3`. Either way a virtualenv, `~/.local/lib`, and anything
+  under a home directory are not visible. A grader needing a package the runtime lacks is
+  an exercise that cannot be gated *until* it names the package in `[deps]` and somebody
+  runs `benkyou warm` for that runtime. A PEP 723 header with `uv run` will not save you:
+  `uv` would have to reach the network to resolve, and there is none.
 - **Nothing outside the exercise exists.** No home directory, no absolute paths into
   the user's filesystem, no writing next to the exercise directory. Work relative to
   `work/`, `check/` and `out/`, and put scratch files in `/tmp`, which is a private
@@ -428,22 +455,27 @@ Be straight with the user about this rather than implying otherwise:
 - No card or exercise generator. `order` tells you what to write; you write it.
 - No UI, no visualiser, no web app.
 - Unix only — the runner uses `/bin/sh` and process groups. It will not run on Windows.
-- **The half that runs scripts is Linux-only, and macOS is the case you will meet.**
-  The sandbox is bubblewrap, which isolates with Linux namespaces, and the tool has no
-  other backend: on macOS `gate`, `attempt`, `grade` and `serve` refuse and say so. Do
-  not argue the point with `sandbox-exec` — macOS does have a sandbox of its own, this
-  tool does not drive it, and it could not bound a process tree or a scratch filesystem
-  if it did. Everything else — `schema`, `validate`, `seed`, `ask`, `record`,
-  `order`, `cards`, `practice`, `session`, `goals` — is file work and runs anywhere,
-  which is exactly the trap: you can generate a whole exercise on a Mac and never be
-  able to gate it, so an ungatable exercise is one you must not hand over.
-  `--unsafe-host` is the flag the error names, and it runs generated `solve.sh` and
-  `check.sh` with the user's own rights over their whole filesystem. **Never pass it on
-  your own initiative.** Report the refusal, offer the two real options — run the
-  exercise half on a Linux host, or read every generated script yourself and let the
-  user decide — and if they choose the flag, keep the goal file, the fluency file and
-  the bank on whichever machine executes: a verdict earned on one machine is refused on
-  another.
+- **No runtime of its own.** The half that runs scripts needs one supplied, and on a mac
+  that means a container. The sandbox is bubblewrap, which isolates with Linux
+  namespaces, so on macOS there is nothing to install and the tool reaches for its other
+  backend: with `docker` or `podman` on `$PATH` the container backend is selected
+  automatically, and `gate`, `attempt`, `grade` and `serve` then work as they do on
+  Linux. The one thing they will not do is fetch the image, because nothing on that path
+  reaches a network by itself — so the refusal you meet names `benkyou runner --pull`,
+  and running that once is the whole fix. Do not argue the point with `sandbox-exec`:
+  macOS does have a sandbox of its own, this tool deliberately does not drive it, and
+  `DESIGN.md` records why. Everything else — `schema`, `validate`, `seed`, `ask`,
+  `record`, `order`, `cards`, `practice`, `session`, `goals` — is file work and runs
+  anywhere with or without a runtime, which is the trap on a machine that has neither:
+  you can generate a whole exercise and never be able to gate it, and an ungatable
+  exercise is one you must not hand over. With no sandbox and no engine the refusal names
+  `--unsafe-host`, and that flag runs generated `solve.sh` and `check.sh` with the user's
+  own rights over their whole filesystem. **Never pass it on your own initiative.**
+  Report the refusal and offer the real options in order: install docker or podman and
+  `benkyou runner --pull`, or run the exercise half on a Linux host, or read every
+  generated script yourself and let the user decide. If they choose the flag, keep the
+  goal file, the fluency file and the bank on whichever machine executes — a verdict
+  records the backend that earned it and every other backend refuses it.
 - No schema validation beyond serde. Unknown keys are accepted silently, so a misspelled
   field is not an error — it is a field that is never read. Start from `benkyou schema`.
 - No way to cite a source. `provenance` is only `llm`, `user` or `job_desc`.
@@ -452,7 +484,11 @@ Be straight with the user about this rather than implying otherwise:
   possible.
 - No reproducibility from the sandbox. Scripts run isolated — no network, no host files,
   no study state — but `/usr` is the host's, so the interpreter and its packages are
-  whatever the machine has. A verdict does not travel to another machine.
+  whatever the machine has and a sandbox verdict does not travel to another machine. A
+  container verdict is checked rather than assumed: it names the resolved image id, and
+  any other image refuses. That is as far as it goes — the engine, the kernel and the
+  architecture still do not travel, and one image reference resolves to a different id
+  per architecture, so a verdict earned on arm64 is refused on amd64.
 - The sandbox is not a defence against a solution author who goes looking. During
   grading the check scripts sit beside `work/` and the verify command runs in that
   directory, so a solution that goes looking can read its own grader — and a Python

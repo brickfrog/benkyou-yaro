@@ -144,10 +144,22 @@ impl Env {
 pub struct Runner {
     /// [`crate::run::RUNNER_SEMANTICS`] at the time of gating.
     pub semantics: u32,
-    /// `sandbox` or `unsafe-host`.
+    /// `sandbox`, `container` or `unsafe-host`.
     pub backend: String,
     /// Execution profile: what the backend was, concretely.
     pub profile: String,
+    /// The exact runtime, for a backend that has one to name.
+    ///
+    /// `None` under the sandbox and the host backend, where the runtime is the
+    /// machine's `/usr` and is not enumerable — see [`Env`]. `Some` under a container,
+    /// where it is the image id the engine resolved, and where being able to name it is
+    /// the whole reason that backend can claim more than the others.
+    ///
+    /// Absent from an old record and from every record the other two backends write, so
+    /// it defaults and is omitted rather than serialising a null into every sidecar in
+    /// an existing library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 impl Runner {
@@ -156,6 +168,7 @@ impl Runner {
             semantics: crate::run::RUNNER_SEMANTICS,
             backend: backend.name().to_string(),
             profile: backend.profile(),
+            image: backend.image_id().map(str::to_string),
         }
     }
 
@@ -165,7 +178,7 @@ impl Runner {
 
     /// Why this record no longer describes the run that is about to happen.
     ///
-    /// Two fields refuse and one warns, split by whether the difference changes what a
+    /// Three fields refuse and one warns, split by whether the difference changes what a
     /// run *can do*.
     ///
     /// `semantics` refuses: this binary changed what a job may see or how it is
@@ -180,9 +193,18 @@ impl Runner {
     /// author who gated with `--unsafe-host` to re-gate sandboxed rather than leaving
     /// a library half-proved.
     ///
-    /// `profile` only warns. A bubblewrap point release is evidence about the run, not
-    /// a change in what the run could do, and invalidating a library on it would make
-    /// re-gating routine — which is how a refusal stops being read.
+    /// `image` refuses, and for a reason the other two backends never had: under a
+    /// container the image *is* the `/usr`. A different image is a different
+    /// interpreter, a different libc and a different set of installed tools, which is
+    /// exactly the drift the environment fingerprint has always had to report as a
+    /// warning because it could not be pinned. Here it can be, so it is not a warning.
+    /// One manifest-list reference resolves to a different id on every architecture, so
+    /// this also catches the arm64 verdict being read on an amd64 machine.
+    ///
+    /// `profile` only warns. A bubblewrap point release, or a newer engine driving the
+    /// same image, is evidence about the run rather than a change in what the run could
+    /// do, and invalidating a library on it would make re-gating routine — which is how
+    /// a refusal stops being read.
     pub fn stale(&self, now: &Runner) -> Option<String> {
         if self.semantics != now.semantics {
             return Some(format!(
@@ -195,6 +217,16 @@ impl Runner {
                 "gated under the {} backend, running the {} backend",
                 self.backend, now.backend
             ));
+        }
+        if self.image != now.image {
+            return Some(match (&self.image, &now.image) {
+                (Some(was), Some(now)) => {
+                    format!("gated against runner image {was}, running {now}")
+                }
+                (Some(was), None) => format!("gated against runner image {was}, running without one"),
+                (None, Some(now)) => format!("gated without a runner image, running {now}"),
+                (None, None) => unreachable!("equal images are not a difference"),
+            });
         }
         None
     }
@@ -483,7 +515,7 @@ pub fn gate_warnings(dir: &Path, backend: &crate::run::Backend) -> Vec<String> {
         Ok(Some(gate)) => {
             let mut out = gate.env.drift(&Env::current());
             out.extend(gate.runner.drift(&Runner::of(backend)));
-            out.extend(deps_drift(dir, &gate));
+            out.extend(deps_drift(dir, &gate, backend));
             out
         }
         _ => Vec::new(),
@@ -498,11 +530,14 @@ pub fn gate_warnings(dir: &Path, backend: &crate::run::Backend) -> Vec<String> {
 /// author pinned. Silence would be wrong though: a grader that passed against one numpy
 /// and fails against the next looks like a broken exercise, and this is the one line
 /// that says otherwise.
-fn deps_drift(dir: &Path, gate: &Gate) -> Vec<String> {
+fn deps_drift(dir: &Path, gate: &Gate, backend: &crate::run::Backend) -> Vec<String> {
     let Ok(task) = load(dir) else { return Vec::new() };
     // A set that cannot be identified is reported by `require` on the run path, where it
     // is an error. Here it would be noise on top of that.
-    let Ok(Some(set)) = crate::deps::require(&task.deps) else { return Vec::new() };
+    let Ok(Some(set)) = crate::deps::require(&task.deps, crate::deps::Runtime::of(backend))
+    else {
+        return Vec::new();
+    };
     let Ok(now) = crate::deps::resolved(&set) else { return Vec::new() };
     if gate.deps == now {
         return Vec::new();
@@ -1023,6 +1058,75 @@ mod tests {
         let host = Runner::of(&crate::run::Backend::UnsafeHost);
         assert!(a.stale(&host).is_some(), "isolation changed and the verdict did not");
         assert!(a.drift(&host).is_empty(), "a refusal is not also a warning");
+    }
+
+    /// The container backend's own refusal, and the one that has no analogue under
+    /// bubblewrap: the image is the `/usr`, so a different image is a different
+    /// interpreter, a different libc and a different set of tools. An engine upgrade
+    /// under the *same* image is the other half — evidence, not a change in what a run
+    /// could do — and it has to stay a warning or re-gating becomes routine.
+    #[test]
+    fn a_different_runner_image_refuses_and_a_newer_engine_warns() {
+        let image = |id: &str| crate::run::Image {
+            reference: "python:3.13-slim@sha256:aaaa".into(),
+            id: id.into(),
+            arch: "arm64".into(),
+        };
+        let container = |engine_version: &str, id: &str| {
+            Runner::of(&crate::run::Backend::Container {
+                cli: "/usr/bin/docker".into(),
+                engine: "docker",
+                version: engine_version.into(),
+                image: image(id),
+            })
+        };
+
+        let gated = container("29.7.2", "sha256:1111");
+        let same = container("29.7.2", "sha256:1111");
+        assert!(gated.stale(&same).is_none(), "the same runtime is not staleness");
+        assert!(gated.drift(&same).is_empty());
+
+        let newer_engine = container("30.0.0", "sha256:1111");
+        assert!(
+            gated.stale(&newer_engine).is_none(),
+            "an engine upgrade must not ungate a library"
+        );
+        assert_eq!(gated.drift(&newer_engine).len(), 1, "but it must still be reported");
+
+        let other_image = container("29.7.2", "sha256:2222");
+        let why = gated
+            .stale(&other_image)
+            .expect("a different image is a different runtime");
+        assert!(why.contains("sha256:1111") && why.contains("sha256:2222"), "{why}");
+
+        // And across backends in both directions: a container verdict is not evidence
+        // about a sandboxed run, and the sandbox has no image to compare at all.
+        let sandbox = Runner::of(&crate::run::Backend::Sandbox {
+            bwrap: "/usr/bin/bwrap".into(),
+            version: "0.11.2".into(),
+        });
+        assert!(gated.stale(&sandbox).is_some());
+        assert!(sandbox.stale(&gated).is_some());
+    }
+
+    /// A record written before the field existed must keep working. Every `.gate.json` in
+    /// an existing library is one of these, and ungating a whole library on a schema
+    /// addition is exactly what `Env` exists to avoid doing.
+    #[test]
+    fn an_old_record_without_an_image_still_reads() {
+        let text = r#"{
+            "solution_passes": true,
+            "empty_fails": true,
+            "validated_at": "2026-08-08T00:00:00Z",
+            "digest": "abc",
+            "runner": {"semantics": 1, "backend": "sandbox", "profile": "bwrap 0.11.2"},
+            "env": {"benkyou": "0.3.0", "os": "linux", "arch": "x86_64"},
+            "known_bad_caught": ["wrong"]
+        }"#;
+        let gate: Gate = serde_json::from_str(text).expect("an old record must parse");
+        assert_eq!(gate.runner.image, None);
+        let again = serde_json::to_string(&gate.runner).expect("serialise");
+        assert!(!again.contains("image"), "an absent image must not be written back: {again}");
     }
 
     #[test]

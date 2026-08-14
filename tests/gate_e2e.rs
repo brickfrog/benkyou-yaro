@@ -8,12 +8,12 @@ use std::path::PathBuf;
 
 use benkyou::exercise::{self, GateFailure, GateOutcome, Verdict};
 use benkyou::gate::run_gate;
-use benkyou::run::Backend;
+use benkyou::run::{Backend, Want};
 
 /// Every test runs under the backend a user gets by default. Proving containment
 /// against anything else would prove nothing.
 fn sandbox() -> Backend {
-    Backend::select(false).expect("a sandbox: install bubblewrap")
+    Backend::choose(Want::Auto, None).expect("a sandbox: install bubblewrap")
 }
 
 fn fixture(name: &str) -> PathBuf {

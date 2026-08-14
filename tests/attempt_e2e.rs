@@ -11,12 +11,22 @@ use std::path::{Path, PathBuf};
 
 use benkyou::attempt::{self, practice_score};
 use benkyou::exercise::{self, Verdict};
-use benkyou::run::Backend;
+use benkyou::run::{Backend, Want};
 
+/// Copy the authored files of an exercise, and only those.
+///
+/// `.gate.json` is skipped, and that is not tidiness: it is derived, it is gitignored,
+/// and anyone who runs `benkyou gate` on the fixture in place leaves one behind — which
+/// the tool documents as safe. Copying it made the ungated case arrive pre-gated, so a
+/// developer who had ever gated the fixture saw this suite fail for a reason that had
+/// nothing to do with their change.
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).expect("mkdir");
     for entry in fs::read_dir(from).expect("readdir") {
         let entry = entry.expect("entry");
+        if entry.file_name() == ".gate.json" {
+            continue;
+        }
         let dst = to.join(entry.file_name());
         if entry.metadata().expect("meta").is_dir() {
             copy_tree(&entry.path(), &dst);
@@ -35,7 +45,7 @@ fn copy_tree(from: &Path, to: &Path) {
 /// Every test runs under the backend a user gets by default. Proving containment
 /// against anything else would prove nothing.
 fn sandbox() -> Backend {
-    Backend::select(false).expect("a sandbox: install bubblewrap")
+    Backend::choose(Want::Auto, None).expect("a sandbox: install bubblewrap")
 }
 
 fn exercise_dir(name: &str, gated: bool, hidden: bool) -> PathBuf {
