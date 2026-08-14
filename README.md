@@ -366,9 +366,25 @@ pointed at each other. Four files carry the version. Move all four together.
    binary it was shipped with.
 4. `README.md` — the `--tag` line and the raw URL in the pinned install.
 5. Run `cargo test`.
-6. Commit the change.
-7. Run `git tag -a vX.Y.Z`.
-8. Push the branch and the tag.
+6. Run the isolation suites in required mode, and accept the run only if it skipped
+   nothing:
+
+   ```sh
+   BENKYOU_REQUIRE_SANDBOX=1 BENKYOU_REQUIRE_CONTAINER=1 cargo test -- --nocapture
+   ```
+
+   No line of the output may contain `skipping`. Plain `cargo test` lets a machine
+   without bubblewrap or without the runner image pass those suites by not running
+   them, and a suite that skips reports passes it did not earn. The two variables turn
+   a missing prerequisite back into a failure, and `tests/support/mod.rs` is where that
+   choice is made. The `ci` workflow proves the same two contracts on every push, in two
+   steps rather than one: the runner has a container engine but no bubblewrap, so the
+   sandbox half runs inside a privileged container. A Linux box with both installed can
+   do it in the one command above, which is why the release step is a local repeat rather
+   than a different gate.
+7. Commit the change.
+8. Run `git tag -a vX.Y.Z`.
+9. Push the branch and the tag.
 
 Raise the minor number after a change to a command, a flag, or an output field. That is
 the contract that the skill describes. A patch is for a change that needs no new wording

@@ -681,6 +681,25 @@ not known`. Every other failure is an error naming the engine. The earlier code 
 any failure as absence, and a test suite then skipped nineteen container assertions on a
 machine with a dead daemon and reported success.
 
+**A skip is a claim, so a release has to refuse one.** `tests/support/mod.rs` hands each
+isolation suite its backend and returns `None` only where the prerequisite cannot be
+there, printing one line that begins `skipping` when it does. `BENKYOU_REQUIRE_SANDBOX=1`
+and `BENKYOU_REQUIRE_CONTAINER=1` turn that line into a panic. So the release checklist in
+the README gains a step before the tag, which asks for both at once on a Linux box that has
+both installed:
+
+```sh
+BENKYOU_REQUIRE_SANDBOX=1 BENKYOU_REQUIRE_CONTAINER=1 cargo test -- --nocapture
+```
+
+The `ci` workflow proves the same two contracts on every pull request and every push to
+`main`, in two steps rather than one. A GitHub runner has a container engine and no
+bubblewrap, and installing a package there needs privileges the workflow does not take, so
+the sandbox half runs inside a privileged container that installs one. Both steps fail if
+any line of their output contains `skipping`, which is why that word is printed on the skip
+path and nowhere else. A suite that skips reports passes it did not earn, and the count at
+the bottom looks the same either way.
+
 **UnsafeHost** is the escape hatch, reachable only by passing `--unsafe-host`. It runs
 as the user, with the user's rights, over the whole filesystem. There is no prompt:
 `gate` runs unattended inside a generation loop, so consent has to be expressible as a

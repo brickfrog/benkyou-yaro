@@ -1,22 +1,15 @@
-//! What the execution boundary must guarantee.
+//! What bubblewrap must guarantee.
 //!
 //! Two halves: report the command's result faithfully and always terminate, and reach
-//! nothing the view did not name.
-//!
-//! Everything runs under the sandbox, which is the backend a user gets. A missing
-//! `bwrap` fails these tests, the same answer the tool gives.
+//! nothing the view did not name. A machine without `bwrap` skips them, and
+//! `BENKYOU_REQUIRE_SANDBOX=1` makes a missing one a failure. `tests/support/mod.rs` holds
+//! that choice, and the release gate and the `ci` sandbox step both set the variable.
 
 use std::path::{Path, PathBuf};
 
-use benkyou::run::{Access, Backend, Job, Limits, Want};
+use benkyou::run::{Access, Backend, Job, Limits};
 
-/// `Want::Auto` accepts either isolating backend, so the refusal names both.
-fn sandbox() -> Backend {
-    Backend::choose(Want::Auto, None).expect(
-        "no sandbox and no container engine: install bubblewrap, or install \
-         docker/podman and run `benkyou runner --pull`",
-    )
-}
+mod support;
 
 /// A run directory with a `work/` in it, like every job has.
 fn scratch(name: &str) -> PathBuf {
@@ -28,8 +21,8 @@ fn scratch(name: &str) -> PathBuf {
 
 const WORK: &[(&str, Access)] = &[("work", Access::Write)];
 
-fn run(dir: &Path, script: &str, secs: u32) -> benkyou::run::Outcome {
-    sandbox()
+fn run(backend: &Backend, dir: &Path, script: &str, secs: u32) -> benkyou::run::Outcome {
+    backend
         .run(&Job::new(dir, WORK, "work", script, secs))
         .expect("ran")
 }
@@ -40,7 +33,11 @@ fn run(dir: &Path, script: &str, secs: u32) -> benkyou::run::Outcome {
 
 #[test]
 fn output_and_exit_code_are_reported() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let out = run(
+        &backend,
         &scratch("basic"),
         "echo to-stdout; echo to-stderr >&2; exit 3",
         30,
@@ -55,7 +52,10 @@ fn output_and_exit_code_are_reported() {
 
 #[test]
 fn a_successful_command_succeeds() {
-    let out = run(&scratch("ok"), "true", 30);
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
+    let out = run(&backend, &scratch("ok"), "true", 30);
     assert!(out.succeeded());
     assert_eq!(out.exit_code, Some(0));
 }
@@ -63,7 +63,15 @@ fn a_successful_command_succeeds() {
 /// Grading reads 127 as a broken exercise, not a wrong answer.
 #[test]
 fn a_missing_command_reports_127() {
-    let out = run(&scratch("missing"), "definitely-not-a-real-binary", 30);
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
+    let out = run(
+        &backend,
+        &scratch("missing"),
+        "definitely-not-a-real-binary",
+        30,
+    );
     assert_eq!(out.exit_code, Some(127));
     assert!(!out.timed_out);
 }
@@ -72,8 +80,11 @@ fn a_missing_command_reports_127() {
 /// survive the run.
 #[test]
 fn writes_reach_the_host_directory() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let dir = scratch("writes");
-    let out = run(&dir, "echo hello > answer.txt", 30);
+    let out = run(&backend, &dir, "echo hello > answer.txt", 30);
     assert!(out.succeeded(), "{out:?}");
     let body = std::fs::read_to_string(dir.join("work/answer.txt")).expect("wrote through");
     assert_eq!(body.trim(), "hello");
@@ -87,11 +98,14 @@ fn writes_reach_the_host_directory() {
 /// against its reference solution, in miniature.
 #[test]
 fn a_directory_outside_the_view_does_not_exist() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let dir = scratch("view");
     std::fs::create_dir_all(dir.join("secret")).unwrap();
     std::fs::write(dir.join("secret/answer"), "42").unwrap();
 
-    let out = run(&dir, "cat ../secret/answer", 30);
+    let out = run(&backend, &dir, "cat ../secret/answer", 30);
     assert!(
         !out.succeeded(),
         "read a directory the view did not name: {out:?}"
@@ -102,11 +116,14 @@ fn a_directory_outside_the_view_does_not_exist() {
 /// A read-only view entry is read-only. The gate hands `check/` over this way.
 #[test]
 fn a_read_only_view_entry_cannot_be_written() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let dir = scratch("ro");
     std::fs::create_dir_all(dir.join("check")).unwrap();
     std::fs::write(dir.join("check/check.sh"), "original").unwrap();
 
-    let out = sandbox()
+    let out = backend
         .run(&Job::new(
             &dir,
             &[("work", Access::Write), ("check", Access::Read)],
@@ -124,50 +141,66 @@ fn a_read_only_view_entry_cannot_be_written() {
 /// Absolute host paths do not work either. The view is the only filesystem the job has.
 #[test]
 fn the_host_filesystem_is_not_reachable() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let dir = scratch("host");
     let witness = dir.join("witness");
     std::fs::write(&witness, "do not read me").unwrap();
 
     // Its own run directory, by absolute host path. The most likely accident.
-    let out = run(&dir, &format!("cat {}", witness.display()), 30);
+    let out = run(&backend, &dir, &format!("cat {}", witness.display()), 30);
     assert!(!out.succeeded(), "{out:?}");
 
     // And a home directory, what a bad `rm` goes for.
-    let out = run(&dir, "ls /home && ls /root", 30);
+    let out = run(&backend, &dir, "ls /home && ls /root", 30);
     assert!(
         !out.succeeded(),
         "enumerated real home directories: {out:?}"
     );
 }
 
-/// No network. A grader that fetches stops working offline.
+/// No network, and no name resolution either. A grader that fetches stops working offline,
+/// and a generated script that phones out is worse.
 ///
-/// Two probes, because the first was platform-dependent. `/dev/tcp` is a bash feature,
-/// so on a dash `/bin/sh` it failed on syntax and passed without opening a socket. The
-/// script names the probe it ran.
+/// The probe is Python, and a `/usr` without it fails this test rather than passing it. An
+/// earlier version fell back to `/dev/tcp`, which is a bash feature: under a dash `/bin/sh`
+/// the redirection failed on syntax and the test passed without opening a socket.
 #[test]
 fn there_is_no_network() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let out = run(
+        &backend,
         &scratch("net"),
-        "if command -v python3 >/dev/null 2>&1; then echo probe=python; \
-           python3 -c \"import socket;socket.create_connection(('1.1.1.1',443),timeout=5)\" \
+        "python3 -c \"print('probe=python')\"; \
+         python3 -c \"import socket;socket.create_connection(('1.1.1.1',443),timeout=5)\" \
            2>/dev/null && echo CONNECTED; \
-         else echo probe=devtcp; \
-           (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null && echo CONNECTED; fi",
+         python3 -c \"import socket;socket.gethostbyname('example.com')\" \
+           2>/dev/null && echo RESOLVED",
         30,
     );
     assert!(
-        out.stdout.contains("probe="),
-        "no probe ran, so nothing was proved: {out:?}"
+        out.stdout.contains("probe=python"),
+        "the /usr this sandbox mounts has no python3, so nothing probed the network: {out:?}"
     );
     assert!(!out.stdout.contains("CONNECTED"), "{out:?}");
+    assert!(
+        !out.stdout.contains("RESOLVED"),
+        "dns resolved inside a network-less job: {out:?}"
+    );
 }
 
 /// `HOME` is writable, is not the workspace, and is not the user's. A grader that caches
 /// into `$HOME` must not reach the real one, and `HOME=/nonexistent` breaks tooling.
 #[test]
 fn home_is_writable_and_is_not_the_users() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let out = run(
+        &backend,
         &scratch("home"),
         "printf '%s' \"$HOME\" && touch \"$HOME/cache\" && echo ' ok'",
         30,
@@ -184,8 +217,12 @@ fn home_is_writable_and_is_not_the_users() {
 /// will not reproduce.
 #[test]
 fn the_environment_is_scrubbed() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     std::env::set_var("BENKYOU_TEST_LEAK", "leaked");
     let out = run(
+        &backend,
         &scratch("env"),
         "echo \"[${BENKYOU_TEST_LEAK-unset}] [${PATH}]\"",
         30,
@@ -204,7 +241,10 @@ fn the_environment_is_scrubbed() {
 
 #[test]
 fn a_hanging_command_hits_the_deadline() {
-    let out = run(&scratch("hang"), "sleep 60", 1);
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
+    let out = run(&backend, &scratch("hang"), "sleep 60", 1);
     assert!(out.timed_out);
     assert!(!out.succeeded());
     assert!(out.elapsed_secs < 30.0, "took {}s", out.elapsed_secs);
@@ -217,7 +257,15 @@ fn a_hanging_command_hits_the_deadline() {
 /// deadline left to fire.
 #[test]
 fn a_backgrounded_grandchild_cannot_hang_the_runner() {
-    let out = run(&scratch("orphan"), "(sleep 60 &) ; echo parent-done", 30);
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
+    let out = run(
+        &backend,
+        &scratch("orphan"),
+        "(sleep 60 &) ; echo parent-done",
+        30,
+    );
     assert!(out.stdout.contains("parent-done"), "{out:?}");
     assert!(out.elapsed_secs < 20.0, "took {}s", out.elapsed_secs);
 }
@@ -226,8 +274,12 @@ fn a_backgrounded_grandchild_cannot_hang_the_runner() {
 /// against the workspace after the verdict.
 #[test]
 fn the_deadline_kills_the_whole_process_tree() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let dir = scratch("tree");
     let out = run(
+        &backend,
         &dir,
         "(while true; do echo x >> survivor; sleep 0.05; done) & sleep 60",
         1,
@@ -250,6 +302,9 @@ fn the_deadline_kills_the_whole_process_tree() {
 /// "printed too much" into "timed out".
 #[test]
 fn runaway_output_is_truncated_not_hung() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let dir = scratch("flood");
     let mut job = Job::new(
         &dir,
@@ -263,7 +318,7 @@ fn runaway_output_is_truncated_not_hung() {
         ..Limits::default()
     };
 
-    let out = sandbox().run(&job).expect("ran");
+    let out = backend.run(&job).expect("ran");
     assert!(out.truncated, "{}", out.stdout.len());
     assert!(!out.timed_out, "an output bomb was reported as a hang");
     assert_eq!(out.exit_code, Some(5), "the exit code survived the flood");
@@ -277,7 +332,11 @@ fn runaway_output_is_truncated_not_hung() {
 /// `/tmp` is a bounded tmpfs, so a runaway write fills a ceiling, not the user's disk.
 #[test]
 fn the_scratch_filesystem_is_bounded() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let out = run(
+        &backend,
         &scratch("disk"),
         "dd if=/dev/zero of=/tmp/fill bs=1M count=2048 2>/dev/null; \
          du -sm /tmp/fill 2>/dev/null | cut -f1",
@@ -294,26 +353,14 @@ fn the_scratch_filesystem_is_bounded() {
 // Policy
 // ---------------------------------------------------------------------------
 
-/// The default is isolation. The host backend is a separate, explicit request.
-#[test]
-fn the_default_backend_is_the_sandbox() {
-    assert_eq!(
-        Backend::choose(Want::Auto, None).expect("a sandbox").name(),
-        "sandbox"
-    );
-    assert_eq!(
-        Backend::choose(Want::UnsafeHost, None)
-            .expect("host")
-            .name(),
-        "unsafe-host"
-    );
-}
-
 /// A view naming a directory the caller never created is refused, not left to the sandbox.
 #[test]
 fn a_view_naming_a_missing_directory_is_refused() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let dir = scratch("absent");
-    let err = sandbox()
+    let err = backend
         .run(&Job::new(
             &dir,
             &[("work", Access::Write), ("nope", Access::Read)],
@@ -329,6 +376,9 @@ fn a_view_naming_a_missing_directory_is_refused() {
 /// spare process slots.
 #[test]
 fn a_fork_bomb_is_contained() {
+    let Some(backend) = support::sandbox() else {
+        return;
+    };
     let dir = scratch("bomb");
     let mut job = Job::new(&dir, WORK, "work", ":(){ :|:& };: ; sleep 5", 10);
     job.limits = Limits {
@@ -337,7 +387,7 @@ fn a_fork_bomb_is_contained() {
     };
 
     let started = std::time::Instant::now();
-    let out = sandbox().run(&job).expect("ran");
+    let out = backend.run(&job).expect("ran");
     assert!(
         started.elapsed().as_secs() < 30,
         "the bomb outlived its deadline"
@@ -365,10 +415,7 @@ fn the_host_backend_can_still_fork() {
         ..Limits::default()
     };
 
-    let out = Backend::choose(Want::UnsafeHost, None)
-        .expect("host")
-        .run(&job)
-        .expect("ran");
+    let out = support::behaviour().run(&job).expect("ran");
     assert!(
         out.succeeded(),
         "a per-user cap leaked onto the host backend: {out:?}"

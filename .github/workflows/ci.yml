@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    name: Both isolating backends prove their contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: The tree under test
+        uses: actions/checkout@v4
+
+      - name: A toolchain that can also lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+
+      - name: The tree is formatted
+        run: cargo fmt --check
+
+      - name: Clippy has nothing to say, tests included
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: An ordinary run passes on a machine with nothing installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No required mode here. This is the contributor's machine: the isolation suites
+          # skip, and every other test still gives a verdict.
+          cargo test
+
+      - name: The runner image is present, fetched the way a reader fetches it
+        run: cargo run --release -- runner --pull
+
+      - name: The container contract holds, with nothing skipped
+        shell: bash
+        run: |
+          set -euo pipefail
+          BENKYOU_REQUIRE_CONTAINER=1 cargo test --test container_smoke -- --nocapture \
+            2>&1 | tee container.log
+          if grep -n skipping container.log; then
+            echo "the container suite skipped a prerequisite it was required to have" >&2
+            exit 1
+          fi
+
+      - name: The sandbox contract holds, with nothing skipped
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Bubblewrap needs a package install, and installing one on the runner needs
+          # privileges this workflow does not take. So the suite runs inside a disposable
+          # privileged container, where root is root and nothing outside it is touched.
+          # Unprivileged user namespaces are restricted on the runner's own kernel, which
+          # is why `--privileged` is here rather than a plain `docker run`.
+          docker run --rm --privileged \
+            -v "$PWD":/src:ro -w /src \
+            -e CARGO_TARGET_DIR=/tmp/target \
+            -e BENKYOU_REQUIRE_SANDBOX=1 \
+            -e DEBIAN_FRONTEND=noninteractive \
+            rust:slim bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              # python3 is the network probe. Without it that test cannot prove absence.
+              apt-get install -y -qq bubblewrap python3
+              bwrap --version
+              cargo test --test run_smoke --test gate_e2e -- --nocapture
+            ' 2>&1 | tee sandbox.log
+          if grep -n skipping sandbox.log; then
+            echo "the sandbox suite skipped a prerequisite it was required to have" >&2
+            exit 1
+          fi

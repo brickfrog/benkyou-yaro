@@ -419,7 +419,6 @@ pub fn run_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run::Want;
 
     fn put(path: PathBuf, body: &str) {
         fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
@@ -488,7 +487,7 @@ mod tests {
             &exercise("failrun", Some("exit 2")),
             &scratch("failrun"),
             "t",
-            &Backend::choose(Want::Auto, None).expect("a sandbox"),
+            &crate::run::Backend::UnsafeHost,
         )
         .expect("gate ran");
 
@@ -507,7 +506,7 @@ mod tests {
             &exercise("okrun", Some("cat answer.txt")),
             &scratch("okrun"),
             "t",
-            &Backend::choose(Want::Auto, None).expect("a sandbox"),
+            &crate::run::Backend::UnsafeHost,
         )
         .expect("gate ran");
 
@@ -524,7 +523,7 @@ mod tests {
             &exercise("norun", None),
             &scratch("norun"),
             "t",
-            &Backend::choose(Want::Auto, None).expect("a sandbox"),
+            &crate::run::Backend::UnsafeHost,
         )
         .expect("gate ran");
         assert!(report.warnings.is_empty());

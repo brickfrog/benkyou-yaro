@@ -228,7 +228,7 @@ pub enum RecordOutcome {
 ///
 /// - `Pass`    → `known |= {n} + requires_ancestors(n)`; those beliefs become 1.0
 /// - `Partial` → ancestors only; `n` stays out of `known` with belief 0.5, so it
-///               remains in the plan as cheap review
+///   remains in the plan as cheap review
 /// - `Fail`    → `unknown |= {n} + requires_descendants(n)`; those beliefs become 0.0
 /// - `Skip`    → nothing; the probe was unanswerable, so it graded the question
 ///

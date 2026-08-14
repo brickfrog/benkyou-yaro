@@ -212,10 +212,10 @@ fn cards_order(id: &str, count: usize) -> (Value, Value) {
             "Do not give away anything under context.unlocks; those are still to come.",
         ],
     });
-    let submit = json!(format!(
+    let submit = json!(
         "benkyou cards <file>            # dry run, prints the notes\n\
          benkyou cards <file> --push     # writes them to Anki"
-    ));
+    );
     (write, submit)
 }
 

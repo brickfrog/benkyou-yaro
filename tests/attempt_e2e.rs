@@ -3,6 +3,9 @@
 //! Two properties carry this module. An ungated exercise must not reach a learner
 //! through either entry point. Grading a hidden exercise must not leave the hidden cases
 //! next to the learner's work, because a checker copied there hands over the reference.
+//!
+//! Every test here runs on the host backend, because isolation is not the subject. What
+//! is at stake is which files reach the learner, not what a job can touch.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -10,7 +13,8 @@ use std::path::{Path, PathBuf};
 
 use benkyou::attempt::{self, practice_score};
 use benkyou::exercise::{self, Verdict};
-use benkyou::run::{Backend, Want};
+
+mod support;
 
 /// Copy the authored files of an exercise, and only those.
 ///
@@ -31,14 +35,6 @@ fn copy_tree(from: &Path, to: &Path) {
             fs::copy(entry.path(), &dst).expect("copy");
         }
     }
-}
-
-/// `Want::Auto` accepts either isolating backend, so the refusal names both.
-fn sandbox() -> Backend {
-    Backend::choose(Want::Auto, None).expect(
-        "no sandbox and no container engine: install bubblewrap, or install \
-         docker/podman and run `benkyou runner --pull`",
-    )
 }
 
 /// A copy of the `dedupe` fixture with the gate's verdict recorded, as `benkyou gate`
@@ -69,7 +65,7 @@ fn exercise_dir(name: &str, gated: bool, hidden: bool) -> PathBuf {
                 validated_at: "test".into(),
                 digest,
                 known_bad_caught: vec!["trap".into()],
-                runner: exercise::Runner::of(&sandbox()),
+                runner: exercise::Runner::of(&support::behaviour()),
                 env: exercise::Env::current(),
                 deps: vec![],
             },
@@ -94,14 +90,14 @@ fn an_ungated_exercise_is_refused_by_both_entry_points() {
     let root = workspace("ungated");
     assert!(exercise::read_gate(&dir).expect("read gate").is_none());
 
-    let opened = attempt::open(&dir, &root, &sandbox());
+    let opened = attempt::open(&dir, &root, &support::behaviour());
     assert!(opened.is_err(), "ungated exercise was opened");
 
     // Reaching `grade` without `open` is not a way around it. Hand-make the workspace
     // and it must still refuse.
     fs::create_dir_all(root.join("work")).expect("mkdir");
     let task = exercise::load(&dir).expect("load");
-    let graded = attempt::grade(&dir, &task, &root, &sandbox());
+    let graded = attempt::grade(&dir, &task, &root, &support::behaviour());
     assert!(graded.is_err(), "ungated exercise was graded");
 }
 
@@ -112,8 +108,8 @@ fn hidden_grading_leaves_no_checker_beside_the_learners_work() {
     let root = workspace("hidden");
     let task = exercise::load(&dir).expect("load");
 
-    attempt::open(&dir, &root, &sandbox()).expect("open");
-    let report = attempt::grade(&dir, &task, &root, &sandbox()).expect("grade");
+    attempt::open(&dir, &root, &support::behaviour()).expect("open");
+    let report = attempt::grade(&dir, &task, &root, &support::behaviour()).expect("grade");
 
     // The grade itself still happened and still says something.
     assert!(report.reward.is_some(), "no reward file was read back");
@@ -142,8 +138,8 @@ fn a_visible_exercise_leaves_its_run_for_inspection() {
     let root = workspace("visible");
     let task = exercise::load(&dir).expect("load");
 
-    attempt::open(&dir, &root, &sandbox()).expect("open");
-    attempt::grade(&dir, &task, &root, &sandbox()).expect("grade");
+    attempt::open(&dir, &root, &support::behaviour()).expect("open");
+    attempt::grade(&dir, &task, &root, &support::behaviour()).expect("grade");
 
     assert!(
         root.join("check").exists(),
@@ -161,7 +157,7 @@ fn the_reference_solution_never_reaches_the_workspace() {
     let dir = exercise_dir("nosol", true, true);
     let root = workspace("nosol");
 
-    let work = attempt::open(&dir, &root, &sandbox()).expect("open");
+    let work = attempt::open(&dir, &root, &support::behaviour()).expect("open");
     assert!(
         dir.join("solution/solve.sh").exists(),
         "the fixture has a solution to leak"
@@ -177,11 +173,11 @@ fn opening_refuses_to_clobber_existing_work() {
     let dir = exercise_dir("clobber", true, true);
     let root = workspace("clobber");
 
-    let work = attempt::open(&dir, &root, &sandbox()).expect("open");
+    let work = attempt::open(&dir, &root, &support::behaviour()).expect("open");
     fs::write(work.join("solution.py"), "# an hour of my life\n").expect("write");
 
     assert!(
-        attempt::open(&dir, &root, &sandbox()).is_err(),
+        attempt::open(&dir, &root, &support::behaviour()).is_err(),
         "a second open overwrote the workspace"
     );
     assert_eq!(

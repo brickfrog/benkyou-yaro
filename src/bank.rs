@@ -281,7 +281,7 @@ fn read_attestations(dir: &Path) -> Vec<Attestation> {
 pub fn list(bank: &Path) -> Result<BTreeMap<String, Meta>, String> {
     let dir = bank;
     let mut out = BTreeMap::new();
-    let entries = match fs::read_dir(&dir) {
+    let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         // An empty bank is not an error: nothing has been gated yet.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),

@@ -331,6 +331,10 @@ pub enum Want {
     /// gate against the runtime a mac uses, and the container tests need it because `Auto`
     /// picks bubblewrap here.
     Container,
+    /// Bubblewrap, refusing rather than falling back. The sandbox tests ask for it because
+    /// `Auto` picks a container on a machine with no namespaces, and their assertions are
+    /// about rlimits and tmpfs sizes that a container does not share.
+    Sandbox,
     UnsafeHost,
 }
 
@@ -343,6 +347,7 @@ impl Backend {
         let image = image.unwrap_or(DEFAULT_IMAGE);
         match want {
             Want::UnsafeHost => Ok(Backend::UnsafeHost),
+            Want::Sandbox => SANDBOX.clone(),
             Want::Container => detect_container(image),
             Want::Auto => match SANDBOX.clone() {
                 Ok(backend) => Ok(backend),

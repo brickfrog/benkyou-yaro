@@ -4,53 +4,16 @@
 //! because the process cap is a cgroup, not an rlimit, and the deadline kills a
 //! container, not a process group.
 //!
-//! On skipping. These tests return early when there is no engine, or when the runner
-//! image is not pulled. A multi-hundred-megabyte pull is not work `cargo test` performs
-//! on its own. `BENKYOU_REQUIRE_CONTAINER=1` turns every skip here into a failure, which
-//! is what CI sets. Without it this file can print `19 passed` having skipped nineteen.
+//! Every test here needs a container engine and a pulled runner image.
+//! `tests/support/mod.rs` says when a missing one is a skip and when it is a failure.
 
 use std::path::{Path, PathBuf};
 
 use benkyou::deps::{self, Runtime};
 use benkyou::exercise::Deps;
-use benkyou::run::{Access, Backend, Job, Limits, Outcome, Want};
+use benkyou::run::{Access, Backend, Job, Limits, Outcome};
 
-/// Set to `1` to turn every skip below into a failure.
-///
-/// Matched against `1` alone: on any other value the variable reads as unset.
-const REQUIRE: &str = "BENKYOU_REQUIRE_CONTAINER";
-
-/// The backend under test, or `None` on a machine that cannot run it.
-///
-/// Missing prerequisites are the only licence to skip: an earlier version returned `None`
-/// on any failure, so a broken policy skipped everything and passed.
-fn container() -> Option<Backend> {
-    match benkyou::run::runner_status(None, false) {
-        Err(why) => return absent(why),
-        Ok(status) if status.image.is_none() => {
-            return absent(format!(
-                "runner image not pulled: {} - run `benkyou runner --pull`",
-                status.reference
-            ));
-        }
-        Ok(_) => {}
-    }
-    Some(
-        Backend::choose(Want::Container, None)
-            .expect("an engine and its image are present, so the backend must build"),
-    )
-}
-
-/// A missing prerequisite: a skip, or a failure under the required mode.
-///
-/// "skipping" is printed on the skip path alone, so a `--nocapture` run can be grepped.
-fn absent(why: String) -> Option<Backend> {
-    if matches!(std::env::var(REQUIRE).as_deref(), Ok("1")) {
-        panic!("{why}\n  {REQUIRE}=1, so a missing prerequisite is a failure, not a skip");
-    }
-    eprintln!("skipping: {why}");
-    None
-}
+mod support;
 
 /// A run directory with a `work/` in it, like every job has.
 fn scratch(name: &str) -> PathBuf {
@@ -68,10 +31,12 @@ fn run(backend: &Backend, dir: &Path, script: &str, secs: u32) -> Outcome {
         .expect("ran")
 }
 
-/// Makes the skip visible. Every other test here returns early in silence.
+/// The engine backend is reachable by name, and it can name the image it runs.
 #[test]
 fn the_backend_is_selectable_by_name() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     assert_eq!(backend.name(), "container");
     assert!(
         backend
@@ -89,7 +54,9 @@ fn the_backend_is_selectable_by_name() {
 /// The engine must not launder the result: the shell's exit code, two separate streams.
 #[test]
 fn output_and_exit_code_survive_the_engine() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let out = run(
         &backend,
         &scratch("basic"),
@@ -107,7 +74,9 @@ fn output_and_exit_code_survive_the_engine() {
 /// its own failure code breaks that.
 #[test]
 fn a_missing_command_still_reports_127() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let out = run(
         &backend,
         &scratch("missing"),
@@ -123,7 +92,9 @@ fn a_missing_command_still_reports_127() {
 /// `--user` is why. A rootful daemon writes as root, leaving files no later run can clear.
 #[test]
 fn writes_reach_the_host_directory_as_the_caller() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let dir = scratch("writes");
     let out = run(&backend, &dir, "echo hello > answer.txt", 60);
     assert!(out.succeeded(), "{out:?}");
@@ -148,7 +119,9 @@ fn writes_reach_the_host_directory_as_the_caller() {
 /// A sibling directory the view did not name is not there.
 #[test]
 fn a_directory_outside_the_view_does_not_exist() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let dir = scratch("view");
     std::fs::create_dir_all(dir.join("secret")).unwrap();
     std::fs::write(dir.join("secret/answer"), "42").unwrap();
@@ -164,7 +137,9 @@ fn a_directory_outside_the_view_does_not_exist() {
 /// A read-only entry is read-only. The gate hands `check/` over this way.
 #[test]
 fn a_read_only_view_entry_cannot_be_written() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let dir = scratch("ro");
     std::fs::create_dir_all(dir.join("check")).unwrap();
     std::fs::write(dir.join("check/check.sh"), "original").unwrap();
@@ -191,7 +166,9 @@ fn a_read_only_view_entry_cannot_be_written() {
 /// Mount lists are assembled per job, so the generic view test does not cover this one.
 #[test]
 fn the_reference_run_cannot_see_the_hidden_checks() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let dir = scratch("hidden");
     std::fs::create_dir_all(dir.join("check")).unwrap();
     std::fs::create_dir_all(dir.join("solution")).unwrap();
@@ -218,7 +195,9 @@ fn the_reference_run_cannot_see_the_hidden_checks() {
 /// Absolute host paths do not work either. The view is the only filesystem the job has.
 #[test]
 fn the_host_filesystem_is_not_reachable() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let dir = scratch("host");
     let witness = dir.join("witness");
     std::fs::write(&witness, "do not read me").unwrap();
@@ -242,7 +221,9 @@ fn the_host_filesystem_is_not_reachable() {
 /// first version failed on syntax and passed with `--network none` removed.
 #[test]
 fn there_is_no_network() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let out = run(
         &backend,
         &scratch("net"),
@@ -266,7 +247,9 @@ fn there_is_no_network() {
 /// `getpwuid` works, which `expanduser` needs.
 #[test]
 fn home_is_writable_and_the_interpreter_agrees() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let out = run(
         &backend,
         &scratch("home"),
@@ -284,7 +267,9 @@ fn home_is_writable_and_the_interpreter_agrees() {
 /// The caller's environment does not reach the job. The image's own `ENV` still does.
 #[test]
 fn the_callers_environment_does_not_leak() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     std::env::set_var("BENKYOU_CONTAINER_LEAK", "leaked");
     let out = run(
         &backend,
@@ -312,7 +297,9 @@ fn the_callers_environment_does_not_leak() {
 /// "different" passes when the two match by accident.
 #[test]
 fn the_interpreter_is_the_images() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let out = run(
         &backend,
         &scratch("interp"),
@@ -334,7 +321,9 @@ fn the_interpreter_is_the_images() {
 
 #[test]
 fn a_hanging_command_hits_the_deadline() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let out = run(&backend, &scratch("hang"), "sleep 120", 2);
     assert!(out.timed_out, "{out:?}");
     assert!(!out.succeeded());
@@ -347,7 +336,9 @@ fn a_hanging_command_hits_the_deadline() {
 /// witness file is checked for growth after the deadline.
 #[test]
 fn the_deadline_kills_the_container_and_not_just_the_client() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let dir = scratch("tree");
     let out = run(
         &backend,
@@ -374,7 +365,9 @@ fn the_deadline_kills_the_container_and_not_just_the_client() {
 /// An output bomb is reported as truncation, not as a hang.
 #[test]
 fn runaway_output_is_truncated_not_hung() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let dir = scratch("flood");
     let mut job = Job::new(
         &dir,
@@ -405,7 +398,9 @@ fn runaway_output_is_truncated_not_hung() {
 /// `/tmp` is a bounded tmpfs, so a runaway write fills a ceiling, not the user's disk.
 #[test]
 fn the_scratch_filesystem_is_bounded() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let out = run(
         &backend,
         &scratch("disk"),
@@ -427,7 +422,9 @@ fn the_scratch_filesystem_is_bounded() {
 /// removed, because a fork bomb hits the host ceiling and prints the same words.
 #[test]
 fn the_process_cap_is_the_containers_own() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let dir = scratch("bomb");
     let mut job = Job::new(
         &dir,
@@ -460,12 +457,14 @@ fn the_process_cap_is_the_containers_own() {
 /// the owner label plus a reap on detection is the only mechanism.
 #[test]
 fn a_container_whose_owner_died_is_reaped() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     // The engine detection chose, at the path it chose. Hard-coded `docker` staged the
     // orphan under an engine that was not the one asked to reap it.
     let Backend::Container { cli, image, .. } = &backend else {
         panic!(
-            "container() hands back a container backend, not {}",
+            "support::container() hands back a container backend, not {}",
             backend.name()
         )
     };
@@ -507,7 +506,9 @@ fn a_container_whose_owner_died_is_reaped() {
     );
 
     // Detection is what reaps. Any container command performs one.
-    let _ = Backend::choose(Want::Container, None).expect("backend");
+    let Some(_detection) = support::container() else {
+        return;
+    };
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let survived = running(&name);
@@ -525,7 +526,9 @@ fn a_container_whose_owner_died_is_reaped() {
 /// A view naming a directory the caller never created is refused, not left to the engine.
 #[test]
 fn a_view_naming_a_missing_directory_is_refused() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let dir = scratch("absent");
     let err = backend
         .run(&Job::new(
@@ -549,10 +552,12 @@ fn a_view_naming_a_missing_directory_is_refused() {
 /// time it runs. Under `BENKYOU_REQUIRE_CONTAINER=1` it fails instead of skipping.
 #[test]
 fn a_warmed_set_is_the_images_own_and_mounts_read_only() {
-    let Some(backend) = container() else { return };
+    let Some(backend) = support::container() else {
+        return;
+    };
     let Backend::Container { image, .. } = &backend else {
         panic!(
-            "container() hands back a container backend, not {}",
+            "support::container() hands back a container backend, not {}",
             backend.name()
         )
     };

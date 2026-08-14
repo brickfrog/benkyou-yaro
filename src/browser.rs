@@ -541,7 +541,6 @@ mod listing_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run::Want;
 
     fn work() -> PathBuf {
         PathBuf::from("/tmp/w")
@@ -578,6 +577,14 @@ mod tests {
         );
     }
 
+    /// One unshowable exercise: its name, how to write its gate record, and the
+    /// phrase its refusal must carry.
+    type RefusalCase = (
+        &'static str,
+        Option<Box<dyn Fn(&str) -> exercise::Gate>>,
+        &'static str,
+    );
+
     /// A session must refuse everything unshowable at startup. Refusing late strands
     /// the learner mid-queue, which is the whole reason this check is duplicated
     /// from `attempt::open`.
@@ -591,20 +598,19 @@ mod tests {
              [task]\nid = \"t\"\nconcept_id = \"c\"\nkind = \"kata\"\nguidance_level = \"blank\"\n\
              [verify]\ncmd = \"sh check/check.sh\"\nmust_pass = [\"correctness\"]\n";
 
-        let backend = Backend::choose(Want::Auto, None).expect("a sandbox");
+        let backend = crate::run::Backend::UnsafeHost;
         let gate = |solution_passes, empty_fails, digest: &str| exercise::Gate {
             solution_passes,
             empty_fails,
             validated_at: "x".into(),
             digest: digest.into(),
             known_bad_caught: vec!["trap".into()],
-            runner: exercise::Runner::of(&Backend::choose(Want::Auto, None).expect("a sandbox")),
+            runner: exercise::Runner::of(&crate::run::Backend::UnsafeHost),
             env: exercise::Env::current(),
             deps: vec![],
         };
 
-        // (name, record to write, the phrase the refusal must carry)
-        let cases: [(&str, Option<Box<dyn Fn(&str) -> exercise::Gate>>, &str); 4] = [
+        let cases: [RefusalCase; 4] = [
             ("no gate record at all", None, "not validated"),
             (
                 "the gate recorded a rejection",
@@ -654,7 +660,7 @@ mod tests {
              [verify]\ncmd = \"sh check/check.sh\"\nmust_pass = [\"correctness\"]\n",
         )
         .unwrap();
-        let backend = Backend::choose(Want::Auto, None).expect("a sandbox");
+        let backend = crate::run::Backend::UnsafeHost;
         let digest = crate::digest::exercise_digest(&dir).unwrap();
         exercise::write_gate(
             &dir,

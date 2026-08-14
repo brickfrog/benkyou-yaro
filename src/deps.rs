@@ -685,9 +685,13 @@ fn published_meanwhile(staging: &Path, path: &Path) -> Option<Vec<String>> {
 
 /// Put a finished staging directory where the set belongs.
 ///
-/// No path removes a valid set before its replacement is in place, and no failure leaves
-/// the key with nothing. `remove_dir_all` then `rename` loses the set on an interruption,
-/// so the replacement is renamed in first.
+/// No path removes a valid set before its replacement is in place, so a returned failure
+/// leaves the old set where it was. `remove_dir_all` then `rename` loses the set on an
+/// interruption, so the replacement is renamed in first.
+///
+/// A hard death between the two renames is the case this does not cover. The key is then
+/// absent and the old tree sits under a scratch name that nothing collects. The next warm
+/// rebuilds the key, so the cost is one install and some disk, not a wrong answer.
 fn publish(staging: &Path, path: &Path) -> Result<(), String> {
     // `rename` succeeds while the destination is absent or empty, which is the common case.
     let first = match fs::rename(staging, path) {
