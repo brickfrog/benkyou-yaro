@@ -634,10 +634,11 @@ not depend on the shape of a name.
 
 One host path cannot be mounted into a container: one that holds a comma. `--mount` takes
 comma-separated `key=value` pairs and has no escape, and quoting the field does not work
-either. The refusal names the path. Two paths reach a mount, and each moves a different
-way: the run directory through `--scratch`, and the dependency cache through
-`XDG_CACHE_HOME`. Switching to `-v`, whose separator is a colon, moves the problem to a
-different set of paths.
+either. The refusal names the path. Three host paths reach a mount, and each moves its own
+way: the run directory with `--scratch`, the dependency cache with `XDG_CACHE_HOME`, and
+the synthetic identity files with `TMPDIR`. The sandbox is unaffected, because `bwrap`
+takes paths as arguments. Switching to `-v`, whose separator is a colon, moves the problem
+to a different set of paths.
 
 **Sandbox** is the default: a user, mount, PID, IPC, UTS and network namespace via
 `bubblewrap`, a read-only `/usr`, a synthetic one-line `/etc/passwd`, a bounded tmpfs

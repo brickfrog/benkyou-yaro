@@ -1218,16 +1218,27 @@ fn container_policy(limits: &Limits) -> Result<Vec<String>, String> {
         "--tmpfs".to_string(),
         format!("/tmp:rw,mode=1777,size={TMP_BYTES}"),
     ]);
-    for (src, dst) in [(passwd, "/etc/passwd"), (group, "/etc/group")] {
-        a.extend([
-            "--mount".to_string(),
-            format!("type=bind,source={},target={dst},readonly", src.display()),
-        ]);
-    }
+    a.extend(identity_mounts(passwd, group)?);
     for (k, v) in ENV {
         a.extend(["--env".to_string(), format!("{k}={v}")]);
     }
     a.extend(["--env".to_string(), format!("HOME={home}")]);
+    Ok(a)
+}
+
+/// The two read-only binds that give a container a `/etc/passwd` and `/etc/group`.
+///
+/// Split out so the comma check covers these too. They live under `TMPDIR`, which the
+/// caller chooses, so they are as able to hold a comma as the run directory is.
+fn identity_mounts(passwd: &Path, group: &Path) -> Result<Vec<String>, String> {
+    let mut a = Vec::new();
+    for (src, dst) in [(passwd, "/etc/passwd"), (group, "/etc/group")] {
+        a.push("--mount".to_string());
+        a.push(format!(
+            "type=bind,source={},target={dst},readonly",
+            mount_source(src)?
+        ));
+    }
     Ok(a)
 }
 
@@ -1242,8 +1253,10 @@ pub(crate) fn mount_source(path: &Path) -> Result<String, String> {
     if let Some(bad) = text.chars().find(|c| *c == ',' || c.is_control()) {
         return Err(format!(
             "{text}: a container mount cannot express this path. {bad:?} has no escape in \
-             `--mount` syntax.\n  Move the run directory with `--scratch`, or the \
-             dependency cache with `XDG_CACHE_HOME`, or run this under the sandbox."
+             `--mount` syntax.\n  Three host paths reach a mount, and each moves its own \
+             way: the run directory with `--scratch`, the dependency cache with \
+             `XDG_CACHE_HOME`, the identity files with `TMPDIR`. Or run this under the \
+             sandbox, which takes paths as arguments rather than as text."
         ));
     }
     Ok(text)
@@ -1541,15 +1554,36 @@ mod refusal_tests {
         }
     }
 
-    /// A container mount cannot carry a comma. The refusal names both movable paths.
+    /// A container mount cannot carry a comma. The refusal names all three movable paths.
     #[test]
     fn a_comma_in_a_path_is_refused_with_a_way_out() {
         let err = super::mount_source(std::path::Path::new("/tmp/a,b/work")).expect_err("refused");
         assert!(err.contains("/tmp/a,b/work"), "{err}");
         assert!(err.contains("--scratch"), "{err}");
         assert!(err.contains("XDG_CACHE_HOME"), "{err}");
+        assert!(err.contains("TMPDIR"), "{err}");
         let ok = super::mount_source(std::path::Path::new("/tmp/plain/work")).expect("accepted");
         assert_eq!(ok, "/tmp/plain/work");
+
+        // The identity binds are host paths too, and they sit under `TMPDIR` rather than
+        // under the run directory. A comma there produced malformed `--mount` CSV instead
+        // of this refusal.
+        let bad = std::path::Path::new("/tmp/a,b/passwd");
+        let good = std::path::Path::new("/tmp/plain/group");
+        assert!(
+            super::identity_mounts(bad, good).is_err(),
+            "a comma in passwd was accepted"
+        );
+        assert!(
+            super::identity_mounts(good, bad).is_err(),
+            "a comma in group was accepted"
+        );
+        let pair = super::identity_mounts(good, good).expect("plain paths are accepted");
+        assert_eq!(
+            pair.len(),
+            4,
+            "two mounts, each a flag and a value: {pair:?}"
+        );
     }
 }
 
